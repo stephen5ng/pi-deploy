@@ -140,6 +140,13 @@ EOF
 
 chmod 644 "/etc/systemd/system/${name}.service"
 
+# Create output directory and set permissions
+# The rpi-rgb-led-matrix library drops privileges from root to daemon user
+# so the application directory needs to be owned by daemon
+echo "Setting up application permissions..."
+mkdir -p "$path/output"
+chown -R daemon:daemon "$path"
+
 # Enable and start service
 echo "Starting service..."
 systemctl daemon-reload
