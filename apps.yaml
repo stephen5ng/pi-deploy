@@ -4,3 +4,14 @@ apps:
     branch: "master"
     path: /opt/lexacube
     exec: /opt/lexacube/runpygame.sh
+    apt_packages:
+      - python3-dev
+      - python3-pillow
+      - python3-setuptools
+      - build-essential
+      - cython3
+    dependencies:
+      - repo: "https://github.com/hzeller/rpi-rgb-led-matrix"
+        path: /opt/rpi-rgb-led-matrix
+        build_cmd: "make -C {path}/lib && make -C {path} build-python"
+        install_python_cmd: "make -C {path} install-python"
