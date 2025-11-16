@@ -1,0 +1,6 @@
+apps:
+  - name: lexacube
+    repo: "https://github.com/stephen5ng/cubes"
+    branch: "master"
+    path: /opt/lexacube
+    exec: /opt/lexacube/runpygame.sh
