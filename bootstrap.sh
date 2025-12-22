@@ -112,6 +112,20 @@ ctl.!default {
 }
 ALSA_EOF
 
+# Configure CPU isolation for LED matrix performance
+echo "Configuring CPU isolation..."
+CMDLINE_FILE="/boot/firmware/cmdline.txt"
+if [[ ! -f "$CMDLINE_FILE" ]]; then
+    CMDLINE_FILE="/boot/cmdline.txt"
+fi
+if ! grep -q "isolcpus=3" "$CMDLINE_FILE"; then
+    echo "Adding isolcpus=3 to $CMDLINE_FILE"
+    sed -i 's/$/ isolcpus=3/' "$CMDLINE_FILE"
+    echo "NOTE: Reboot required for CPU isolation to take effect"
+else
+    echo "CPU isolation already configured in $CMDLINE_FILE"
+fi
+
 # Extract service user from config (default to dietpi if not specified)
 service_user=$(yq -r '.apps[0].user // "dietpi"' "$CONFIG")
 
@@ -142,10 +156,10 @@ chmod 644 "/etc/systemd/system/${name}.service"
 
 # Create output directory and set permissions
 # The rpi-rgb-led-matrix library drops privileges from root to daemon user
-# so the application directory needs to be owned by daemon
+# so the output directory needs to be owned by daemon (not the entire app path)
 echo "Setting up application permissions..."
 mkdir -p "$path/output"
-chown -R daemon:daemon "$path"
+chown -R daemon:daemon "$path/output"
 
 # Enable and start service
 echo "Starting service..."
