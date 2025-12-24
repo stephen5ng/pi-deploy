@@ -10,7 +10,9 @@ apps:
       - python3-setuptools
       - build-essential
       - cython3
+      - mosquitto
       - mosquitto-clients
+      - netcat-openbsd
     dependencies:
       - repo: "https://github.com/hzeller/rpi-rgb-led-matrix"
         path: /opt/rpi-rgb-led-matrix
