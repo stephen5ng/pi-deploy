@@ -4,6 +4,7 @@ apps:
     branch: "master"
     path: /opt/lexacube
     exec: xinit /opt/lexacube/runpygame.sh -- :0 vt1
+    user: root  # Required for rpi-rgb-led-matrix GPIO access
     apt_packages:
       - python3-dev
       - python3-pillow

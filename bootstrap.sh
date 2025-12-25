@@ -142,7 +142,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=$service_user
 WorkingDirectory=$path
 ExecStart=$exec
 Restart=on-failure
