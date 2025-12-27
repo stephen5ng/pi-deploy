@@ -3,9 +3,30 @@ set -euo pipefail
 
 CONFIG="apps.yaml"
 
+# Clone or update a git repository
+git_clone_or_update() {
+    local repo=$1
+    local dest=$2
+    local branch=${3:-}
+
+    if [[ -d "$dest/.git" ]]; then
+        echo "Updating $dest..."
+        git -C "$dest" pull
+    else
+        echo "Cloning $repo..."
+        if [[ -n "$branch" ]]; then
+            git clone --branch "$branch" "$repo" "$dest"
+        else
+            git clone "$repo" "$dest"
+        fi
+    fi
+}
+
 echo "=== Bootstrapping from $CONFIG ==="
 
-# Extract config values (first app only)
+# ============================================================================
+# PARSE CONFIGURATION
+# ============================================================================
 name=$(yq -r '.apps[0].name' "$CONFIG")
 repo=$(yq -r '.apps[0].repo' "$CONFIG")
 branch=$(yq -r '.apps[0].branch' "$CONFIG")
@@ -19,7 +40,9 @@ echo "Path:   $path"
 echo "Exec:   $exec"
 echo ""
 
-# Install apt packages if specified
+# ============================================================================
+# INSTALL SYSTEM PACKAGES
+# ============================================================================
 apt_packages=$(yq -r '.apps[0].apt_packages[]? // empty' "$CONFIG")
 if [[ -n "$apt_packages" ]]; then
     echo "Installing apt packages..."
@@ -27,7 +50,9 @@ if [[ -n "$apt_packages" ]]; then
     echo "$apt_packages" | xargs apt-get install -y
 fi
 
-# Process dependencies if specified
+# ============================================================================
+# BUILD EXTERNAL DEPENDENCIES
+# ============================================================================
 dep_count=$(yq -r '.apps[0].dependencies | length' "$CONFIG" 2>/dev/null || echo "0")
 if [[ "$dep_count" -gt 0 ]]; then
     echo "Processing $dep_count dependencies..."
@@ -35,41 +60,28 @@ if [[ "$dep_count" -gt 0 ]]; then
         dep_repo=$(yq -r ".apps[0].dependencies[$i].repo" "$CONFIG")
         dep_path=$(yq -r ".apps[0].dependencies[$i].path" "$CONFIG")
         dep_build=$(yq -r ".apps[0].dependencies[$i].build_cmd // empty" "$CONFIG")
-        dep_python=$(yq -r ".apps[0].dependencies[$i].install_python // false" "$CONFIG")
 
         echo "  Dependency: $dep_repo -> $dep_path"
-
-        # Clone or update dependency
-        if [[ -d "$dep_path/.git" ]]; then
-            echo "    Updating..."
-            git -C "$dep_path" pull
-        else
-            echo "    Cloning..."
-            git clone "$dep_repo" "$dep_path"
-        fi
+        git_clone_or_update "$dep_repo" "$dep_path"
 
         # Build if build_cmd specified
         if [[ -n "$dep_build" ]]; then
-            build_cmd="${dep_build//\{path\}/$dep_path}"
-            echo "    Building: $build_cmd"
-            eval "$build_cmd"
+            echo "    Building: ${dep_build//\{path\}/$dep_path}"
+            eval "${dep_build//\{path\}/$dep_path}"
         fi
     done
 fi
 
-# Clone or update repo
-if [[ -d "$path/.git" ]]; then
-    echo "Updating repo..."
-    git -C "$path" fetch --all
-    git -C "$path" checkout "$branch"
-    git -C "$path" pull origin "$branch"
-else
-    echo "Cloning repo..."
-    mkdir -p "$path"
-    git clone --branch "$branch" "$repo" "$path"
-fi
+# ============================================================================
+# DEPLOY APPLICATION
+# ============================================================================
+echo "Processing app repo..."
+mkdir -p "$path"
+git_clone_or_update "$repo" "$path" "$branch"
 
-# Create Python virtual environment
+# ============================================================================
+# SETUP PYTHON ENVIRONMENT
+# ============================================================================
 if [[ ! -d "$path/cube_env" ]]; then
     echo "Creating virtual environment..."
     python3 -m venv "$path/cube_env"
@@ -84,21 +96,23 @@ if [[ -f "$path/requirements.txt" ]]; then
     deactivate
 fi
 
-# Install Python bindings for dependencies
+# Install Python bindings for dependencies (using data from earlier loop)
 if [[ "$dep_count" -gt 0 ]]; then
+    echo "Installing Python bindings for dependencies..."
     for ((i=0; i<dep_count; i++)); do
         dep_path=$(yq -r ".apps[0].dependencies[$i].path" "$CONFIG")
         dep_python_cmd=$(yq -r ".apps[0].dependencies[$i].install_python_cmd // empty" "$CONFIG")
 
         if [[ -n "$dep_python_cmd" ]]; then
-            install_cmd="${dep_python_cmd//\{path\}/$dep_path}"
-            echo "Installing Python bindings: $install_cmd"
-            eval "$install_cmd"
+            echo "  Installing: ${dep_python_cmd//\{path\}/$dep_path}"
+            eval "${dep_python_cmd//\{path\}/$dep_path}"
         fi
     done
 fi
 
-# Configure ALSA for USB audio device
+# ============================================================================
+# CONFIGURE SYSTEM
+# ============================================================================
 echo "Configuring ALSA..."
 cat > /etc/asound.conf <<'ALSA_EOF'
 pcm.!default {
@@ -133,7 +147,9 @@ service_user=$(yq -r '.apps[0].user // "dietpi"' "$CONFIG")
 echo "Adding $service_user to audio group..."
 usermod -a -G audio "$service_user"
 
-# Create systemd service
+# ============================================================================
+# SETUP SYSTEMD SERVICE
+# ============================================================================
 echo "Creating systemd service..."
 cat > "/etc/systemd/system/${name}.service" <<EOF
 [Unit]
