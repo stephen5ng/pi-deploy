@@ -147,6 +147,37 @@ service_user=$(yq -r '.apps[0].user // "dietpi"' "$CONFIG")
 echo "Adding $service_user to audio group..."
 usermod -a -G audio "$service_user"
 
+# Install Claude backend switch scripts for root user
+echo "Installing Claude backend switch scripts..."
+CLAUDE_SWITCH_DIR="/root/.claude-switch"
+mkdir -p "$CLAUDE_SWITCH_DIR"
+
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Copy switch scripts if they exist
+if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
+    cp "$SCRIPT_DIR/scripts/use-anthropic.sh" "$CLAUDE_SWITCH_DIR/"
+    cp "$SCRIPT_DIR/scripts/use-zai.sh" "$CLAUDE_SWITCH_DIR/"
+    chmod +x "$CLAUDE_SWITCH_DIR"/*.sh
+    echo "  Copied switch scripts to $CLAUDE_SWITCH_DIR"
+
+    # Add aliases to .bashrc if not already present
+    BASHRC_FILE="/root/.bashrc"
+    ALIAS_MARKER="# Claude backend switch aliases"
+    if ! grep -q "$ALIAS_MARKER" "$BASHRC_FILE" 2>/dev/null; then
+        echo "" >> "$BASHRC_FILE"
+        echo "$ALIAS_MARKER" >> "$BASHRC_FILE"
+        echo "alias claude-ant='source ~/.claude-switch/use-anthropic.sh && claude'" >> "$BASHRC_FILE"
+        echo "alias claude-zai='source ~/.claude-switch/use-zai.sh && claude'" >> "$BASHRC_FILE"
+        echo "  Added aliases to $BASHRC_FILE"
+    else
+        echo "  Aliases already exist in $BASHRC_FILE"
+    fi
+else
+    echo "  Warning: Switch scripts not found in $SCRIPT_DIR/scripts/"
+fi
+
 # ============================================================================
 # SETUP SYSTEMD SERVICE
 # ============================================================================
