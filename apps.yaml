@@ -3,8 +3,10 @@ apps:
     repo: "https://github.com/stephen5ng/cubes"
     branch: "master"
     path: /opt/lexacube
-    exec: xinit /opt/lexacube/runpygame.sh -- :0 vt1
+    exec: /opt/lexacube/runpygame.sh --mode game_on --display mini
     user: root  # Required for rpi-rgb-led-matrix GPIO access
+    environment:
+      - SDL_AUDIODRIVER=dummy
     apt_packages:
       - python3-dev
       - python3-pillow
@@ -14,9 +16,6 @@ apps:
       - mosquitto
       - mosquitto-clients
       - netcat-openbsd
-      - xserver-xorg
-      - xinit
-      - x11-xserver-utils
     dependencies:
       - repo: "https://github.com/hzeller/rpi-rgb-led-matrix"
         path: /opt/rpi-rgb-led-matrix

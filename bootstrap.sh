@@ -113,6 +113,15 @@ fi
 # ============================================================================
 # CONFIGURE SYSTEM
 # ============================================================================
+# Configure mosquitto to listen on all interfaces
+echo "Configuring mosquitto for network access..."
+mkdir -p /etc/mosquitto/conf.d
+cat > /etc/mosquitto/conf.d/network.conf <<'MQTT_EOF'
+listener 1883 0.0.0.0
+allow_anonymous true
+MQTT_EOF
+systemctl restart mosquitto
+
 echo "Configuring ALSA..."
 cat > /etc/asound.conf <<'ALSA_EOF'
 pcm.!default {
@@ -190,6 +199,17 @@ fi
 # SETUP SYSTEMD SERVICE
 # ============================================================================
 echo "Creating systemd service..."
+
+# Build Environment directives from config
+env_lines=""
+env_count=$(yq -r '.apps[0].environment | length' "$CONFIG" 2>/dev/null || echo "0")
+if [[ "$env_count" -gt 0 ]]; then
+    for ((i=0; i<env_count; i++)); do
+        env_var=$(yq -r ".apps[0].environment[$i]" "$CONFIG")
+        env_lines="${env_lines}Environment=${env_var}\n"
+    done
+fi
+
 cat > "/etc/systemd/system/${name}.service" <<EOF
 [Unit]
 Description=$name service
@@ -200,7 +220,7 @@ Type=simple
 User=$service_user
 WorkingDirectory=$path
 ExecStart=$exec
-Restart=on-failure
+$(echo -e "$env_lines")Restart=on-failure
 RestartSec=5
 
 [Install]
