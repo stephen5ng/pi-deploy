@@ -1,0 +1,3 @@
+# Claude API keys (never commit these)
+scripts/*-key
+*.key

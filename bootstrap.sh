@@ -162,6 +162,17 @@ if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
     chmod +x "$CLAUDE_SWITCH_DIR"/*.sh
     echo "  Copied switch scripts to $CLAUDE_SWITCH_DIR"
 
+    # Create example key files (not actual keys, just placeholders)
+    if [[ ! -f "$CLAUDE_SWITCH_DIR/anthropic-key" ]]; then
+        echo "# Add your Anthropic API key here (sk-ant-...)" > "$CLAUDE_SWITCH_DIR/anthropic-key.example"
+    fi
+    if [[ ! -f "$CLAUDE_SWITCH_DIR/zai-key" ]]; then
+        echo "# Add your Z.ai API key here (sk-zai-...)" > "$CLAUDE_SWITCH_DIR/zai-key.example"
+    fi
+    echo "  Created example key files. Add your keys to:"
+    echo "    $CLAUDE_SWITCH_DIR/anthropic-key"
+    echo "    $CLAUDE_SWITCH_DIR/zai-key"
+
     # Add aliases to .bashrc if not already present
     BASHRC_FILE="/root/.bashrc"
     ALIAS_MARKER="# Claude backend switch aliases"
