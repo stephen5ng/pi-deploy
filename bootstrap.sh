@@ -51,6 +51,40 @@ if [[ -n "$apt_packages" ]]; then
 fi
 
 # ============================================================================
+# BUILD SDL2 WITH KMSDRM SUPPORT (for pygame HDMI output on headless RPi)
+# The Debian SDL2 package is compiled without kmsdrm/fbdev. We build from
+# source with kmsdrm enabled so pygame can display on HDMI without X11.
+# ============================================================================
+echo "Building SDL2 with kmsdrm support..."
+apt-get install -y --no-install-recommends build-essential cmake git libdrm-dev libgbm-dev libgl1-mesa-dev libasound2-dev libpulse-dev
+
+SDL2_BUILD_DIR="/tmp/SDL2_build"
+if [[ ! -f "/usr/local/lib/libSDL2-2.0.so.0" ]]; then
+    rm -rf "$SDL2_BUILD_DIR"
+    git clone --depth 1 --branch SDL2 https://github.com/libsdl-org/SDL.git "$SDL2_BUILD_DIR"
+    mkdir -p "$SDL2_BUILD_DIR/build"
+    pushd "$SDL2_BUILD_DIR/build"
+    cmake -DCMAKE_BUILD_TYPE=Release \
+        -DSDL_KMSDRM=ON \
+        -DSDL_X11=OFF \
+        -DSDL_WAYLAND=OFF \
+        -DSDL_VULKAN=OFF \
+        -DSDL_UNIX_CONSOLE_BUILD=ON \
+        ..
+    make -j$(nproc)
+    make install
+    ldconfig
+    popd
+    rm -rf "$SDL2_BUILD_DIR"
+    echo "SDL2 with kmsdrm built and installed"
+else
+    echo "SDL2 with kmsdrm already installed"
+fi
+
+# Replace pygame's bundled SDL2 (compiled without kmsdrm) with our kmsdrm-enabled version
+# The venv python path is not known yet, so this is done after venv setup below
+
+# ============================================================================
 # BUILD EXTERNAL DEPENDENCIES
 # ============================================================================
 dep_count=$(yq -r '.apps[0].dependencies | length' "$CONFIG" 2>/dev/null || echo "0")
@@ -110,6 +144,23 @@ if [[ "$dep_count" -gt 0 ]]; then
     done
 fi
 
+# Replace pygame's bundled SDL2 with our kmsdrm-enabled version
+echo "Replacing pygame's bundled SDL2 with kmsdrm-enabled version..."
+PYGAME_LIBS=$(find "$path/cube_env" -name "pygame.libs" -type d 2>/dev/null | head -1)
+if [[ -n "$PYGAME_LIBS" ]]; then
+    SDL_BUNDLED=$(ls "$PYGAME_LIBS"/libSDL2-2*.so.* 2>/dev/null | head -1)
+    SDL_NEW=$(ls /usr/local/lib/libSDL2-2.0.so.0.*.0 2>/dev/null | head -1)
+    if [[ -n "$SDL_BUNDLED" && -n "$SDL_NEW" ]]; then
+        cp "$SDL_BUNDLED" "${SDL_BUNDLED}.bak"
+        cp "$SDL_NEW" "$SDL_BUNDLED"
+        echo "  Replaced $SDL_BUNDLED with $SDL_NEW"
+    else
+        echo "  WARNING: Could not find bundled SDL2 or new SDL2 to replace"
+    fi
+else
+    echo "  WARNING: pygame.libs directory not found in venv"
+fi
+
 # ============================================================================
 # CONFIGURE SYSTEM
 # ============================================================================
@@ -134,6 +185,20 @@ ctl.!default {
     card 0
 }
 ALSA_EOF
+
+# Enable VC4 KMS (Kernel Mode Setting) for HDMI display output with DRM
+echo "Configuring VC4 KMS for pygame/SDL display output..."
+CONFIG_FILE="/boot/firmware/config.txt"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    CONFIG_FILE="/boot/config.txt"
+fi
+if ! grep -q "dtoverlay=vc4-kms-v3d" "$CONFIG_FILE"; then
+    echo "Adding VC4 KMS overlay to $CONFIG_FILE"
+    sed -i '/^#-------Display---------/a dtoverlay=vc4-kms-v3d' "$CONFIG_FILE"
+    echo "NOTE: Reboot required for VC4 KMS to take effect"
+else
+    echo "VC4 KMS overlay already configured in $CONFIG_FILE"
+fi
 
 # Configure CPU isolation for LED matrix performance
 echo "Configuring CPU isolation..."
