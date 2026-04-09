@@ -184,7 +184,8 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     if [[ "$env_count" -gt 0 ]]; then
         for ((i=0; i<env_count; i++)); do
             env_var=$(yq -r ".apps[$app_idx].environment[$i]" "$CONFIG")
-            env_lines="${env_lines}Environment=${env_var}\n"
+            env_lines="${env_lines}
+Environment=${env_var}"
         done
     fi
 
@@ -197,8 +198,8 @@ After=$after
 Type=simple
 User=$service_user
 WorkingDirectory=$path
-ExecStart=$exec
-$(echo -e "$env_lines")Restart=on-failure
+ExecStart=$exec${env_lines}
+Restart=on-failure
 RestartSec=5
 
 [Install]
