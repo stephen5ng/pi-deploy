@@ -88,19 +88,26 @@ When modifying application configuration:
 - Python bindings are installed into the app's venv, not system-wide
 - APT packages are system-wide, installed before dependency builds
 
-### Understanding the Current App (lexacube)
+### Apps
 
+**lexacube** — LED matrix game
 - Lives in: `/opt/lexacube`
 - Runs: `/opt/lexacube/runpygame.sh`
 - Depends on: rpi-rgb-led-matrix library for LED control
 - Uses: Python venv at `/opt/lexacube/cube_env`
 - Output: Written to `/opt/lexacube/output/` (owned by daemon user)
 
+**nfc-control** — NFC admin action daemon
+- Lives in: `/opt/nfc-control`
+- Runs: `/opt/lexacube/cube_env/bin/python3 /opt/nfc-control/nfc_control_daemon.py`
+- Reuses lexacube's venv (aiomqtt already installed there)
+- Requires: `After=mosquitto.service` (configured via `after` field in apps.yaml)
+
 ### Systemd Service Pattern
 
 Services created by bootstrap.sh have:
 - Auto-restart on failure (5 sec delay)
-- Network dependency (`After=network.target`)
+- `After` dependencies from the `after` field in apps.yaml (defaults to `network.target`)
 - WorkingDirectory set to app path
 - ExecStart pointing to configured exec script
 

@@ -5,6 +5,7 @@ apps:
     path: /opt/lexacube
     exec: /opt/lexacube/runpygame.sh --mode game_on --display mini
     user: root  # Required for rpi-rgb-led-matrix GPIO access
+    after: "network.target"
     environment:
       - SDL_AUDIODRIVER=dummy
     apt_packages:
@@ -21,3 +22,10 @@ apps:
         path: /opt/rpi-rgb-led-matrix
         build_cmd: "make -C {path}/lib && make -C {path} build-python"
         install_python_cmd: "make -C {path} install-python"
+
+  - name: nfc-control
+    repo: "https://github.com/stephen5ng/nfc-control"
+    path: /opt/nfc-control
+    exec: /opt/lexacube/cube_env/bin/python3 /opt/nfc-control/nfc_control_daemon.py
+    user: root
+    after: "network.target mosquitto.service"

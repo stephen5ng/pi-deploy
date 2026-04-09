@@ -24,31 +24,9 @@ git_clone_or_update() {
 
 echo "=== Bootstrapping from $CONFIG ==="
 
-# ============================================================================
-# PARSE CONFIGURATION
-# ============================================================================
-name=$(yq -r '.apps[0].name' "$CONFIG")
-repo=$(yq -r '.apps[0].repo' "$CONFIG")
-branch=$(yq -r '.apps[0].branch' "$CONFIG")
-path=$(yq -r '.apps[0].path' "$CONFIG")
-exec=$(yq -r '.apps[0].exec' "$CONFIG")
-
-echo "App:    $name"
-echo "Repo:   $repo"
-echo "Branch: $branch"
-echo "Path:   $path"
-echo "Exec:   $exec"
+app_count=$(yq -r '.apps | length' "$CONFIG")
+echo "Found $app_count app(s) to deploy"
 echo ""
-
-# ============================================================================
-# INSTALL SYSTEM PACKAGES
-# ============================================================================
-apt_packages=$(yq -r '.apps[0].apt_packages[]? // empty' "$CONFIG")
-if [[ -n "$apt_packages" ]]; then
-    echo "Installing apt packages..."
-    apt-get update
-    echo "$apt_packages" | xargs apt-get install -y
-fi
 
 # ============================================================================
 # BUILD SDL2 WITH KMSDRM SUPPORT (for pygame HDMI output on headless RPi)
@@ -81,89 +59,160 @@ else
     echo "SDL2 with kmsdrm already installed"
 fi
 
-# Replace pygame's bundled SDL2 (compiled without kmsdrm) with our kmsdrm-enabled version
-# The venv python path is not known yet, so this is done after venv setup below
-
 # ============================================================================
-# BUILD EXTERNAL DEPENDENCIES
+# PROCESS EACH APP
 # ============================================================================
-dep_count=$(yq -r '.apps[0].dependencies | length' "$CONFIG" 2>/dev/null || echo "0")
-if [[ "$dep_count" -gt 0 ]]; then
-    echo "Processing $dep_count dependencies..."
-    for ((i=0; i<dep_count; i++)); do
-        dep_repo=$(yq -r ".apps[0].dependencies[$i].repo" "$CONFIG")
-        dep_path=$(yq -r ".apps[0].dependencies[$i].path" "$CONFIG")
-        dep_build=$(yq -r ".apps[0].dependencies[$i].build_cmd // empty" "$CONFIG")
+for ((app_idx=0; app_idx<app_count; app_idx++)); do
+    name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
+    repo=$(yq -r ".apps[$app_idx].repo" "$CONFIG")
+    branch=$(yq -r ".apps[$app_idx].branch // empty" "$CONFIG")
+    path=$(yq -r ".apps[$app_idx].path" "$CONFIG")
+    exec=$(yq -r ".apps[$app_idx].exec" "$CONFIG")
+    service_user=$(yq -r ".apps[$app_idx].user // \"dietpi\"" "$CONFIG")
+    after=$(yq -r ".apps[$app_idx].after // \"network.target\"" "$CONFIG")
 
-        echo "  Dependency: $dep_repo -> $dep_path"
-        git_clone_or_update "$dep_repo" "$dep_path"
+    echo "--- App: $name ---"
+    echo "Repo:   $repo"
+    echo "Path:   $path"
+    echo "Exec:   $exec"
+    echo ""
 
-        # Build if build_cmd specified
-        if [[ -n "$dep_build" ]]; then
-            echo "    Building: ${dep_build//\{path\}/$dep_path}"
-            eval "${dep_build//\{path\}/$dep_path}"
-        fi
-    done
-fi
-
-# ============================================================================
-# DEPLOY APPLICATION
-# ============================================================================
-echo "Processing app repo..."
-mkdir -p "$path"
-git_clone_or_update "$repo" "$path" "$branch"
-
-# ============================================================================
-# SETUP PYTHON ENVIRONMENT
-# ============================================================================
-if [[ ! -d "$path/cube_env" ]]; then
-    echo "Creating virtual environment..."
-    python3 -m venv "$path/cube_env"
-fi
-
-# Install requirements if they exist
-if [[ -f "$path/requirements.txt" ]]; then
-    echo "Installing requirements..."
-    source "$path/cube_env/bin/activate"
-    pip install --upgrade pip
-    pip install -r "$path/requirements.txt"
-    deactivate
-fi
-
-# Install Python bindings for dependencies (using data from earlier loop)
-if [[ "$dep_count" -gt 0 ]]; then
-    echo "Installing Python bindings for dependencies..."
-    for ((i=0; i<dep_count; i++)); do
-        dep_path=$(yq -r ".apps[0].dependencies[$i].path" "$CONFIG")
-        dep_python_cmd=$(yq -r ".apps[0].dependencies[$i].install_python_cmd // empty" "$CONFIG")
-
-        if [[ -n "$dep_python_cmd" ]]; then
-            echo "  Installing: ${dep_python_cmd//\{path\}/$dep_path}"
-            eval "${dep_python_cmd//\{path\}/$dep_path}"
-        fi
-    done
-fi
-
-# Replace pygame's bundled SDL2 with our kmsdrm-enabled version
-echo "Replacing pygame's bundled SDL2 with kmsdrm-enabled version..."
-PYGAME_LIBS=$(find "$path/cube_env" -name "pygame.libs" -type d 2>/dev/null | head -1)
-if [[ -n "$PYGAME_LIBS" ]]; then
-    SDL_BUNDLED=$(ls "$PYGAME_LIBS"/libSDL2-2*.so.* 2>/dev/null | head -1)
-    SDL_NEW=$(ls /usr/local/lib/libSDL2-2.0.so.0.*.0 2>/dev/null | head -1)
-    if [[ -n "$SDL_BUNDLED" && -n "$SDL_NEW" ]]; then
-        cp "$SDL_BUNDLED" "${SDL_BUNDLED}.bak"
-        cp "$SDL_NEW" "$SDL_BUNDLED"
-        echo "  Replaced $SDL_BUNDLED with $SDL_NEW"
-    else
-        echo "  WARNING: Could not find bundled SDL2 or new SDL2 to replace"
+    # --------------------------------------------------------------------------
+    # Install apt packages
+    # --------------------------------------------------------------------------
+    apt_packages=$(yq -r ".apps[$app_idx].apt_packages[]? // empty" "$CONFIG")
+    if [[ -n "$apt_packages" ]]; then
+        echo "Installing apt packages..."
+        apt-get update
+        echo "$apt_packages" | xargs apt-get install -y
     fi
-else
-    echo "  WARNING: pygame.libs directory not found in venv"
-fi
+
+    # --------------------------------------------------------------------------
+    # Build external dependencies
+    # --------------------------------------------------------------------------
+    dep_count=$(yq -r ".apps[$app_idx].dependencies | length" "$CONFIG" 2>/dev/null || echo "0")
+    if [[ "$dep_count" -gt 0 ]]; then
+        echo "Processing $dep_count dependencies..."
+        for ((i=0; i<dep_count; i++)); do
+            dep_repo=$(yq -r ".apps[$app_idx].dependencies[$i].repo" "$CONFIG")
+            dep_path=$(yq -r ".apps[$app_idx].dependencies[$i].path" "$CONFIG")
+            dep_build=$(yq -r ".apps[$app_idx].dependencies[$i].build_cmd // empty" "$CONFIG")
+
+            echo "  Dependency: $dep_repo -> $dep_path"
+            git_clone_or_update "$dep_repo" "$dep_path"
+
+            if [[ -n "$dep_build" ]]; then
+                echo "    Building: ${dep_build//\{path\}/$dep_path}"
+                eval "${dep_build//\{path\}/$dep_path}"
+            fi
+        done
+    fi
+
+    # --------------------------------------------------------------------------
+    # Deploy application repo
+    # --------------------------------------------------------------------------
+    echo "Processing app repo..."
+    mkdir -p "$path"
+    git_clone_or_update "$repo" "$path" "$branch"
+
+    # --------------------------------------------------------------------------
+    # Setup Python environment (only if requirements.txt exists)
+    # --------------------------------------------------------------------------
+    if [[ -f "$path/requirements.txt" ]]; then
+        if [[ ! -d "$path/cube_env" ]]; then
+            echo "Creating virtual environment..."
+            python3 -m venv "$path/cube_env"
+        fi
+        echo "Installing requirements..."
+        source "$path/cube_env/bin/activate"
+        pip install --upgrade pip
+        pip install -r "$path/requirements.txt"
+        deactivate
+    fi
+
+    # Install Python bindings for dependencies
+    if [[ "$dep_count" -gt 0 ]]; then
+        echo "Installing Python bindings for dependencies..."
+        for ((i=0; i<dep_count; i++)); do
+            dep_path=$(yq -r ".apps[$app_idx].dependencies[$i].path" "$CONFIG")
+            dep_python_cmd=$(yq -r ".apps[$app_idx].dependencies[$i].install_python_cmd // empty" "$CONFIG")
+
+            if [[ -n "$dep_python_cmd" ]]; then
+                echo "  Installing: ${dep_python_cmd//\{path\}/$dep_path}"
+                eval "${dep_python_cmd//\{path\}/$dep_path}"
+            fi
+        done
+    fi
+
+    # --------------------------------------------------------------------------
+    # Replace pygame's bundled SDL2 with kmsdrm-enabled version (lexacube only)
+    # --------------------------------------------------------------------------
+    if [[ "$name" == "lexacube" ]]; then
+        echo "Replacing pygame's bundled SDL2 with kmsdrm-enabled version..."
+        PYGAME_LIBS=$(find "$path/cube_env" -name "pygame.libs" -type d 2>/dev/null | head -1)
+        if [[ -n "$PYGAME_LIBS" ]]; then
+            SDL_BUNDLED=$(ls "$PYGAME_LIBS"/libSDL2-2*.so.* 2>/dev/null | head -1)
+            SDL_NEW=$(ls /usr/local/lib/libSDL2-2.0.so.0.*.0 2>/dev/null | head -1)
+            if [[ -n "$SDL_BUNDLED" && -n "$SDL_NEW" ]]; then
+                cp "$SDL_BUNDLED" "${SDL_BUNDLED}.bak"
+                cp "$SDL_NEW" "$SDL_BUNDLED"
+                echo "  Replaced $SDL_BUNDLED with $SDL_NEW"
+            else
+                echo "  WARNING: Could not find bundled SDL2 or new SDL2 to replace"
+            fi
+        else
+            echo "  WARNING: pygame.libs directory not found in venv"
+        fi
+
+        # Create output directory owned by daemon (rpi-rgb-led-matrix drops to daemon user)
+        echo "Setting up application permissions..."
+        mkdir -p "$path/output"
+        chown -R daemon:daemon "$path/output"
+    fi
+
+    # --------------------------------------------------------------------------
+    # Setup systemd service
+    # --------------------------------------------------------------------------
+    echo "Creating systemd service for $name..."
+
+    env_lines=""
+    env_count=$(yq -r ".apps[$app_idx].environment | length" "$CONFIG" 2>/dev/null || echo "0")
+    if [[ "$env_count" -gt 0 ]]; then
+        for ((i=0; i<env_count; i++)); do
+            env_var=$(yq -r ".apps[$app_idx].environment[$i]" "$CONFIG")
+            env_lines="${env_lines}Environment=${env_var}\n"
+        done
+    fi
+
+    cat > "/etc/systemd/system/${name}.service" <<EOF
+[Unit]
+Description=$name service
+After=$after
+
+[Service]
+Type=simple
+User=$service_user
+WorkingDirectory=$path
+ExecStart=$exec
+$(echo -e "$env_lines")Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    chmod 644 "/etc/systemd/system/${name}.service"
+    systemctl daemon-reload
+    systemctl enable "${name}.service"
+    systemctl restart "${name}.service"
+    echo "Service $name started."
+    echo ""
+done
 
 # ============================================================================
-# CONFIGURE SYSTEM
+# CONFIGURE SYSTEM (shared, run once)
 # ============================================================================
+
 # Configure mosquitto to listen on all interfaces
 echo "Configuring mosquitto for network access..."
 mkdir -p /etc/mosquitto/conf.d
@@ -214,17 +263,13 @@ else
     echo "CPU isolation already configured in $CMDLINE_FILE"
 fi
 
-# Extract service user from config (default to dietpi if not specified)
-service_user=$(yq -r '.apps[0].user // "dietpi"' "$CONFIG")
-
 # Add user to audio group for audio device access
-echo "Adding $service_user to audio group..."
-usermod -a -G audio "$service_user"
+echo "Adding root to audio group..."
+usermod -a -G audio root
 
 # Install Claude backend switch scripts for root and dietpi users
 echo "Installing Claude backend switch scripts..."
 
-# Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
@@ -237,12 +282,10 @@ if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
         chmod +x "$CLAUDE_SWITCH_DIR"/*.sh
         echo "  Copied switch scripts to $CLAUDE_SWITCH_DIR"
 
-        # Create example key file for Z.ai (Anthropic uses default auth, no key needed)
         if [[ ! -f "$CLAUDE_SWITCH_DIR/zai-key" ]]; then
             echo "# Add your Z.ai API key here (sk-zai-...)" > "$CLAUDE_SWITCH_DIR/zai-key.example"
         fi
 
-        # Add aliases to .bashrc if not already present
         BASHRC_FILE="$USER_HOME/.bashrc"
         ALIAS_MARKER="# Claude backend switch aliases"
         if ! grep -q "$ALIAS_MARKER" "$BASHRC_FILE" 2>/dev/null; then
@@ -255,7 +298,6 @@ if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
             echo "  Aliases already exist in $BASHRC_FILE"
         fi
 
-        # Fix ownership for dietpi user
         if [[ "$USER_HOME" == "/home/dietpi" ]]; then
             chown -R dietpi:dietpi "$CLAUDE_SWITCH_DIR"
         fi
@@ -266,53 +308,6 @@ if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
 else
     echo "  Warning: Switch scripts not found in $SCRIPT_DIR/scripts/"
 fi
-
-# ============================================================================
-# SETUP SYSTEMD SERVICE
-# ============================================================================
-echo "Creating systemd service..."
-
-# Build Environment directives from config
-env_lines=""
-env_count=$(yq -r '.apps[0].environment | length' "$CONFIG" 2>/dev/null || echo "0")
-if [[ "$env_count" -gt 0 ]]; then
-    for ((i=0; i<env_count; i++)); do
-        env_var=$(yq -r ".apps[0].environment[$i]" "$CONFIG")
-        env_lines="${env_lines}Environment=${env_var}\n"
-    done
-fi
-
-cat > "/etc/systemd/system/${name}.service" <<EOF
-[Unit]
-Description=$name service
-After=network.target
-
-[Service]
-Type=simple
-User=$service_user
-WorkingDirectory=$path
-ExecStart=$exec
-$(echo -e "$env_lines")Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-chmod 644 "/etc/systemd/system/${name}.service"
-
-# Create output directory and set permissions
-# The rpi-rgb-led-matrix library drops privileges from root to daemon user
-# so the output directory needs to be owned by daemon (not the entire app path)
-echo "Setting up application permissions..."
-mkdir -p "$path/output"
-chown -R daemon:daemon "$path/output"
-
-# Enable and start service
-echo "Starting service..."
-systemctl daemon-reload
-systemctl enable "${name}.service"
-systemctl restart "${name}.service"
 
 echo ""
 echo "=== Bootstrap complete ==="
