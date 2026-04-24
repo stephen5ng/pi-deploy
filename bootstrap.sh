@@ -120,7 +120,7 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     # Setup Python environment (only if requirements.txt exists)
     # --------------------------------------------------------------------------
     if [[ -n "$venv_name" && -f "$path/requirements.txt" ]]; then
-        if [[ ! -d "$path/$venv_name" ]]; then
+        if [[ ! -f "$path/$venv_name/bin/activate" ]]; then
             echo "Creating virtual environment..."
             python3 -m venv "$path/$venv_name"
         fi
