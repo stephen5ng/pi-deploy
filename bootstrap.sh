@@ -67,6 +67,7 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     repo=$(yq -r ".apps[$app_idx].repo" "$CONFIG")
     branch=$(yq -r ".apps[$app_idx].branch // empty" "$CONFIG")
     path=$(yq -r ".apps[$app_idx].path" "$CONFIG")
+    venv_name=$(yq -r ".apps[$app_idx].venv // empty" "$CONFIG")
     exec=$(yq -r ".apps[$app_idx].exec" "$CONFIG")
     service_user=$(yq -r ".apps[$app_idx].user // \"dietpi\"" "$CONFIG")
     after=$(yq -r ".apps[$app_idx].after // \"network.target\"" "$CONFIG")
@@ -118,13 +119,13 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     # --------------------------------------------------------------------------
     # Setup Python environment (only if requirements.txt exists)
     # --------------------------------------------------------------------------
-    if [[ -f "$path/requirements.txt" ]]; then
-        if [[ ! -d "$path/cube_env" ]]; then
+    if [[ -n "$venv_name" && -f "$path/requirements.txt" ]]; then
+        if [[ ! -d "$path/$venv_name" ]]; then
             echo "Creating virtual environment..."
-            python3 -m venv "$path/cube_env"
+            python3 -m venv "$path/$venv_name"
         fi
         echo "Installing requirements..."
-        source "$path/cube_env/bin/activate"
+        source "$path/$venv_name/bin/activate"
         pip install --upgrade pip
         pip install -r "$path/requirements.txt"
         deactivate
@@ -133,9 +134,8 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     # Install Python bindings for dependencies
     if [[ "$dep_count" -gt 0 ]]; then
         echo "Installing Python bindings for dependencies..."
-        if [[ -d "$path/cube_env" ]]; then
-            source "$path/cube_env/bin/activate"
-        fi
+        venv_dir="$path/$venv_name"
+        [[ -n "$venv_name" && -d "$venv_dir" ]] && source "$venv_dir/bin/activate"
         for ((i=0; i<dep_count; i++)); do
             dep_path=$(yq -r ".apps[$app_idx].dependencies[$i].path" "$CONFIG")
             dep_python_cmd=$(yq -r ".apps[$app_idx].dependencies[$i].install_python_cmd // empty" "$CONFIG")
@@ -145,9 +145,7 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
                 eval "${dep_python_cmd//\{path\}/$dep_path}"
             fi
         done
-        if [[ -d "$path/cube_env" ]]; then
-            deactivate
-        fi
+        [[ -n "$venv_name" && -d "$venv_dir" ]] && deactivate
     fi
 
     # --------------------------------------------------------------------------
@@ -155,7 +153,7 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     # --------------------------------------------------------------------------
     if [[ "$name" == "lexacube" ]]; then
         echo "Replacing pygame's bundled SDL2 with kmsdrm-enabled version..."
-        PYGAME_LIBS=$(find "$path/cube_env" -name "pygame.libs" -type d 2>/dev/null | head -1)
+        PYGAME_LIBS=$(find "$path/$venv_name" -name "pygame.libs" -type d 2>/dev/null | head -1)
         if [[ -n "$PYGAME_LIBS" ]]; then
             SDL_BUNDLED=$(ls "$PYGAME_LIBS"/libSDL2-2*.so.* 2>/dev/null | head -1)
             SDL_NEW=$(ls /usr/local/lib/libSDL2-2.0.so.0.*.0 2>/dev/null | head -1)
@@ -186,7 +184,8 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     if [[ "$env_count" -gt 0 ]]; then
         for ((i=0; i<env_count; i++)); do
             env_var=$(yq -r ".apps[$app_idx].environment[$i]" "$CONFIG")
-            env_lines="${env_lines}Environment=${env_var}\n"
+            env_lines="${env_lines}
+Environment=${env_var}"
         done
     fi
 
@@ -199,8 +198,8 @@ After=$after
 Type=simple
 User=$service_user
 WorkingDirectory=$path
-ExecStart=$exec
-$(echo -e "$env_lines")Restart=on-failure
+ExecStart=$exec${env_lines}
+Restart=on-failure
 RestartSec=5
 
 [Install]
