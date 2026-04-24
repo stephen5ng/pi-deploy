@@ -18,6 +18,7 @@ apps:
       - mosquitto
       - mosquitto-clients
       - netcat-openbsd
+      - openssh-client
     dependencies:
       - repo: "https://github.com/hzeller/rpi-rgb-led-matrix"
         path: /opt/rpi-rgb-led-matrix
