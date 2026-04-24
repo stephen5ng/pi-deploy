@@ -19,6 +19,7 @@ apps:
       - mosquitto-clients
       - netcat-openbsd
       - openssh-client
+      - python3-venv
     dependencies:
       - repo: "https://github.com/hzeller/rpi-rgb-led-matrix"
         path: /opt/rpi-rgb-led-matrix
