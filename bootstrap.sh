@@ -133,6 +133,9 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     # Install Python bindings for dependencies
     if [[ "$dep_count" -gt 0 ]]; then
         echo "Installing Python bindings for dependencies..."
+        if [[ -d "$path/cube_env" ]]; then
+            source "$path/cube_env/bin/activate"
+        fi
         for ((i=0; i<dep_count; i++)); do
             dep_path=$(yq -r ".apps[$app_idx].dependencies[$i].path" "$CONFIG")
             dep_python_cmd=$(yq -r ".apps[$app_idx].dependencies[$i].install_python_cmd // empty" "$CONFIG")
@@ -142,6 +145,9 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
                 eval "${dep_python_cmd//\{path\}/$dep_path}"
             fi
         done
+        if [[ -d "$path/cube_env" ]]; then
+            deactivate
+        fi
     fi
 
     # --------------------------------------------------------------------------

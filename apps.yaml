@@ -20,8 +20,8 @@ apps:
     dependencies:
       - repo: "https://github.com/hzeller/rpi-rgb-led-matrix"
         path: /opt/rpi-rgb-led-matrix
-        build_cmd: "make -C {path}/lib && make -C {path} build-python"
-        install_python_cmd: "make -C {path} install-python"
+        build_cmd: "make -C {path}/lib"
+        install_python_cmd: "pip install {path}/bindings/python"
 
   - name: nfc-control
     repo: "https://github.com/stephen5ng/nfc-control"
