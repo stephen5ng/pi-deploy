@@ -20,10 +20,11 @@ apps:
       - netcat-openbsd
       - openssh-client
       - python3-venv
+      - alsa-utils
     dependencies:
       - repo: "https://github.com/hzeller/rpi-rgb-led-matrix"
         path: /opt/rpi-rgb-led-matrix
-        install_python_cmd: "pip install {path}"
+        install_python_cmd: "pip install scikit-build-core cython && pip install {path}"
 
   - name: nfc-control
     repo: "https://github.com/stephen5ng/nfc-control"

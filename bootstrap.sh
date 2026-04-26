@@ -168,6 +168,42 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
             echo "  WARNING: pygame.libs directory not found in venv"
         fi
 
+        # Download word sounds audio assets from GitHub release (no auth required, public repo)
+        ASSETS_DIR="$path/assets"
+        if [[ ! -d "$ASSETS_DIR/word_sounds_0" ]]; then
+            echo "Downloading word sounds audio assets..."
+            RELEASE_API="https://api.github.com/repos/stephen5ng/cubes/releases/tags/audio-assets"
+            AUDIO_DOWNLOAD_DIR=$(mktemp -d -p /var/tmp)
+
+            ASSET_URLS=$(curl -sf "$RELEASE_API" \
+                | python3 -c "import sys,json; assets=json.load(sys.stdin)['assets']; print('\n'.join(sorted(a['browser_download_url'] for a in assets if 'word_sounds.tar.gz.part' in a['name'])))")
+
+            if [[ -z "$ASSET_URLS" ]]; then
+                echo "  WARNING: No audio asset parts found in release, skipping."
+            else
+                while IFS= read -r url; do
+                    filename=$(basename "$url")
+                    echo "  Downloading $filename..."
+                    curl -Lf "$url" -o "$AUDIO_DOWNLOAD_DIR/$filename"
+                done <<< "$ASSET_URLS"
+
+                echo "  Extracting audio assets..."
+                cat "$AUDIO_DOWNLOAD_DIR"/word_sounds.tar.gz.part.* > "$AUDIO_DOWNLOAD_DIR/word_sounds.tar.gz"
+                mkdir -p "$ASSETS_DIR"
+                tar xzf "$AUDIO_DOWNLOAD_DIR/word_sounds.tar.gz" -C "$ASSETS_DIR"
+
+                # word_sounds_0 is the neutral voice; copy it for player 2
+                if [[ -d "$ASSETS_DIR/word_sounds_0" ]]; then
+                    cp -r "$ASSETS_DIR/word_sounds_0" "$ASSETS_DIR/word_sounds_2"
+                fi
+
+                rm -rf "$AUDIO_DOWNLOAD_DIR"
+                echo "  Audio assets installed."
+            fi
+        else
+            echo "Audio assets already present, skipping download."
+        fi
+
         # Create output directory owned by daemon (rpi-rgb-led-matrix drops to daemon user)
         echo "Setting up application permissions..."
         mkdir -p "$path/output"
@@ -231,12 +267,12 @@ echo "Configuring ALSA..."
 cat > /etc/asound.conf <<'ALSA_EOF'
 pcm.!default {
     type hw
-    card 0
+    card ICUSBAUDIO7D
 }
 
 ctl.!default {
     type hw
-    card 0
+    card ICUSBAUDIO7D
 }
 ALSA_EOF
 
