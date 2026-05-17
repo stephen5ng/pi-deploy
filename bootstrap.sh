@@ -260,6 +260,7 @@ mkdir -p /etc/mosquitto/conf.d
 cat > /etc/mosquitto/conf.d/network.conf <<'MQTT_EOF'
 listener 1883 0.0.0.0
 allow_anonymous true
+persistence false
 MQTT_EOF
 systemctl restart mosquitto
 
