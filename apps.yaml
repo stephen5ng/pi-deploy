@@ -32,3 +32,17 @@ apps:
     exec: /opt/lexacube/cube_env/bin/python3 /opt/nfc-control/nfc_control_daemon.py
     user: root
     after: "network.target mosquitto.service"
+
+  - name: knockstrip
+    repo: "https://github.com/stephen5ng/knockstrip"
+    path: /home/dietpi/knockstrip
+    exec: /home/dietpi/knockstrip/.venv/bin/python -m knockstrip.cli --hardware
+    user: root
+    after: "network.target sound.target"
+    environment:
+      - PYTHONPATH=/home/dietpi/knockstrip/game/src
+      - SUDO_UID=1000
+      - SUDO_GID=1000
+    apt_packages:
+      - libportaudio2
+
