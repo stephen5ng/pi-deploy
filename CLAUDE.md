@@ -125,3 +125,33 @@ These files are used during SD card preparation (before first boot):
 - Customize `dietpi.template.txt` and copy to `/boot/dietpi.txt` for unattended setup
 - Customize `dietpi-wifi.template.txt` and copy to `/boot/dietpi-wifi.txt` for WiFi
 - Must be placed on boot partition before powering on the Pi
+
+## Reliability & Observability
+
+`scripts/reliability.sh` (run at the end of `bootstrap.sh`, idempotent) hardens
+the Pi against the live-event failure mode where it hung and needed a manual
+power-cycle. Four independent measures:
+
+1. **Hardware watchdog** — `/etc/systemd/system.conf.d/10-watchdog.conf` sets
+   `RuntimeWatchdogSec=15`. If pid1 stops petting `/dev/watchdog0` (a true
+   hang), the BCM2835 hardware resets the Pi in 15s. No more running to the box.
+2. **Persistent journald** — `/var/log` is a DietPi RAMlog tmpfs, so the
+   journal is volatile and a reboot erases the logs that would explain a hang.
+   A `nofail` bind mount ties `/var/log/journal` to SSD-backed
+   `/var/lib/journal-persist` (with `x-systemd.before=dietpi-ramlog.service`
+   ordering), and a `journald.conf.d` drop-in sets `Storage=persistent`. RAMlog
+   still handles the rest of `/var/log`.
+3. **zram swap** — no swap + `cgroup_disable=memory` means a RAM spike hangs the
+   whole box. `dietpi-set_swapfile 1 zram` adds ~50%-of-RAM compressed swap
+   (zero SSD wear). Fresh flashes get this from `dietpi.template.txt`
+   (`AUTO_SETUP_SWAPFILE_LOCATION=zram`).
+4. **Health logger** — `pi-health-watch.service` runs `pi-health-watch.sh`,
+   polling the firmware throttle/undervoltage bitmask + temp into the (now
+   persistent) journal every 5s. The "since boot" bits latch, so even a
+   sub-second brownout transient is caught. Inspect with `journalctl -t pi-health`.
+
+Background: a bench load test (all cores + SSD write bursts) could **not**
+reproduce a 5V-rail brownout, so rather than chase an unproven power fault
+these measures make the Pi self-heal (1, 3) and self-diagnose (2, 4). The
+definitive power test is running the real game engine at max stations with
+audio while watching `vcgencmd get_throttled`.

@@ -119,7 +119,15 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     # --------------------------------------------------------------------------
     # Setup Python environment (only if requirements.txt exists)
     # --------------------------------------------------------------------------
-    if [[ -n "$venv_name" && -f "$path/requirements.txt" ]]; then
+    if [[ -f "$path/uv.lock" ]]; then
+        echo "Syncing Python environment with uv..."
+        if ! command -v uv &> /dev/null; then
+            echo "  uv not found, installing..."
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="$HOME/.local/bin:$PATH"
+        fi
+        (cd "$path" && uv sync --all-extras)
+    elif [[ -n "$venv_name" && -f "$path/requirements.txt" ]]; then
         if [[ ! -f "$path/$venv_name/bin/activate" ]]; then
             echo "Creating virtual environment..."
             python3 -m venv "$path/$venv_name"
@@ -225,6 +233,12 @@ Environment=${env_var}"
         done
     fi
 
+    env_file_line=""
+    if [[ -f "/etc/${name}.env" ]]; then
+        env_file_line="
+EnvironmentFile=/etc/${name}.env"
+    fi
+
     cat > "/etc/systemd/system/${name}.service" <<EOF
 [Unit]
 Description=$name service
@@ -233,7 +247,7 @@ After=$after
 [Service]
 Type=simple
 User=$service_user
-WorkingDirectory=$path
+WorkingDirectory=$path${env_file_line}
 ExecStart=$exec${env_lines}
 Restart=on-failure
 RestartSec=5
@@ -309,6 +323,9 @@ fi
 echo "Adding root to audio group..."
 usermod -a -G audio root
 
+echo "Adding dietpi to hardware groups (audio, dialout, gpio)..."
+usermod -a -G audio,dialout,gpio dietpi || true
+
 # Install Claude backend switch scripts for root and dietpi users
 echo "Installing Claude backend switch scripts..."
 
@@ -349,6 +366,17 @@ if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
     echo "  (Anthropic uses default authentication, no key needed)"
 else
     echo "  Warning: Switch scripts not found in $SCRIPT_DIR/scripts/"
+fi
+
+# ============================================================================
+# RELIABILITY & OBSERVABILITY (watchdog, zram swap, persistent journal,
+# health logger). Idempotent; see scripts/reliability.sh.
+# ============================================================================
+if [[ -f "$SCRIPT_DIR/scripts/reliability.sh" ]]; then
+    echo "Applying reliability & observability hardening..."
+    bash "$SCRIPT_DIR/scripts/reliability.sh"
+else
+    echo "  Warning: scripts/reliability.sh not found, skipping hardening"
 fi
 
 echo ""
