@@ -56,7 +56,7 @@ The entire deployment is driven by `apps.yaml`, which defines:
 5. **Python Environment**: Create venv, install requirements.txt
 6. **Install Python Bindings**: Link Python wrappers for C libraries into venv
 7. **System Configuration**: ALSA audio, CPU isolation (isolcpus=3)
-8. **Service Setup**: Generate systemd service, set permissions, enable/start
+8. **Service Setup**: Generate systemd service and optional service-address unit, set permissions, enable/start
 
 Key characteristic: **Path substitution pattern** in dependency build commands uses `{path}` placeholder that gets replaced with actual installation path at runtime.
 
@@ -93,6 +93,9 @@ When modifying application configuration:
 **lexacube** — LED matrix game
 - Lives in: `/opt/lexacube`
 - Runs: `/opt/lexacube/runpygame.sh`
+- Claims `192.168.8.247/24` as a secondary address through
+  `lexacube-address.service`; the Pi's ordinary DHCP address remains available
+  for administration
 - Depends on: rpi-rgb-led-matrix library for LED control
 - Uses: Python venv at `/opt/lexacube/cube_env`
 - Output: Written to `/opt/lexacube/output/` (owned by daemon user)
@@ -110,6 +113,15 @@ Services created by bootstrap.sh have:
 - `After` dependencies from the `after` field in apps.yaml (defaults to `network.target`)
 - WorkingDirectory set to app path
 - ExecStart pointing to configured exec script
+
+Apps may define `service_address.address` and an optional
+`service_address.interface` (`auto` by default). Bootstrap installs a separate
+oneshot unit that claims the address before the app starts and keeps it across
+app restarts. The helper refuses to claim an address already in use by another
+host. If the service address is still configured as the DietPi host's primary
+static address, bootstrap offers an interactive, idempotent migration to DHCP.
+The live change runs as a delayed systemd job and restores the original
+`/etc/network/interfaces` configuration if DHCP fails.
 
 ### Idempotency
 
