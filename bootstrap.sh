@@ -524,6 +524,30 @@ else
     echo "  Warning: scripts/reliability.sh not found, skipping hardening"
 fi
 
+# ============================================================================
+# CLEANUP OBSOLETE SERVICES
+# ============================================================================
+echo "Cleaning up obsolete service units..."
+expected_address_services=""
+for ((app_idx=0; app_idx<app_count; app_idx++)); do
+    app_name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
+    has_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
+    if [[ -n "$has_address" ]]; then
+        expected_address_services+=" ${app_name}-address.service "
+    fi
+done
+
+for existing_svc_path in /etc/systemd/system/*-address.service; do
+    [[ -f "$existing_svc_path" ]] || continue
+    svc_name=$(basename "$existing_svc_path")
+    if [[ "$expected_address_services" != *" $svc_name "* ]]; then
+        echo "Removing obsolete service address unit: $svc_name"
+        systemctl disable --now "$svc_name" 2>/dev/null || true
+        rm -f "$existing_svc_path"
+    fi
+done
+systemctl daemon-reload
+
 # Migrate a legacy primary service address only after all deployment work is
 # complete. The live interface change runs as a detached systemd job.
 for ((app_idx=0; app_idx<app_count; app_idx++)); do

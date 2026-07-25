@@ -46,8 +46,28 @@ case "$action" in
         fi
 
         if command -v arping >/dev/null 2>&1; then
-            if ! arping -D -q -c 2 -I "$interface" "$address"; then
-                echo "Refusing to claim $address: another host answered ARP on $interface" >&2
+            max_retries=10
+            retry_count=0
+            arping_status=0
+
+            while [[ $retry_count -lt $max_retries ]]; do
+                arping_status=0
+                arping -D -q -c 2 -I "$interface" "$address" || arping_status=$?
+
+                if [[ $arping_status -eq 0 ]]; then
+                    break
+                elif [[ $arping_status -eq 1 ]]; then
+                    echo "Refusing to claim $address: another host answered ARP on $interface" >&2
+                    exit 1
+                else
+                    echo "arping failed with status $arping_status (link not ready?); retrying in 2 seconds..." >&2
+                    sleep 2
+                    ((retry_count++))
+                fi
+            done
+
+            if [[ $arping_status -ne 0 ]]; then
+                echo "Failed to verify address uniqueness after $max_retries retries (arping status $arping_status)" >&2
                 exit 1
             fi
         fi
