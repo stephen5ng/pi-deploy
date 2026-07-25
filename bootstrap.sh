@@ -64,46 +64,45 @@ setup_ssh_for_root() {
     } > "$GITHUB_KNOWN_HOSTS"
     chmod 644 "$GITHUB_KNOWN_HOSTS"
 
-    # Check if root already has SSH keys
-    if [[ -f "$root_ssh/id_ed25519" ]] || [[ -f "$root_ssh/id_rsa" ]]; then
-        echo "Root SSH keys already exist"
-        if github_ssh_auth_works; then
-            echo "GitHub SSH auth verified, will use SSH for GitHub repos"
-            return 0
-        fi
-        echo "Warning: Existing root keys failed GitHub authentication; trying DietPi keys..."
+    local working_key=""
+    
+    # Try DietPi keys first, testing all available types
+    if [[ -d "$dietpi_ssh" ]]; then
+        echo "Checking for DietPi SSH keys..."
+        for key_type in ed25519 rsa; do
+            if [[ -f "$dietpi_ssh/id_$key_type" ]]; then
+                local new_key="$root_ssh/id_dietpi_$key_type"
+                cp "$dietpi_ssh/id_$key_type" "$new_key"
+                cp "$dietpi_ssh/id_${key_type}.pub" "${new_key}.pub" 2>/dev/null || true
+                chmod 600 "$new_key"
+                chmod 644 "${new_key}.pub" 2>/dev/null || true
+                
+                GITHUB_IDENTITY_FILE="$new_key"
+                if github_ssh_auth_works; then
+                    working_key="$new_key"
+                    echo "GitHub SSH auth verified using DietPi $key_type key."
+                    break
+                else
+                    GITHUB_IDENTITY_FILE=""
+                fi
+            fi
+        done
     fi
-
-    # Check if dietpi has SSH keys
-    if [[ ! -f "$dietpi_ssh/id_ed25519" ]] && [[ ! -f "$dietpi_ssh/id_rsa" ]]; then
-        echo "No SSH keys found in $dietpi_ssh, will use HTTPS for all repos"
-        return 0
-    fi
-
-    echo "Setting up SSH for root using dietpi keys..."
-
-    local best_key=""
-    for key_type in ed25519 rsa; do
-        if [[ -f "$dietpi_ssh/id_$key_type" ]]; then
-            local new_key="$root_ssh/id_dietpi_$key_type"
-            cp "$dietpi_ssh/id_$key_type" "$new_key"
-            cp "$dietpi_ssh/id_${key_type}.pub" "${new_key}.pub" 2>/dev/null || true
-            chmod 600 "$new_key"
-            chmod 644 "${new_key}.pub" 2>/dev/null || true
-            if [[ -z "$best_key" ]]; then
-                best_key="$new_key"
+    
+    # If no DietPi key worked, fall back to root's default keys
+    if [[ -z "$working_key" ]]; then
+        if [[ -f "$root_ssh/id_ed25519" ]] || [[ -f "$root_ssh/id_rsa" ]]; then
+            echo "Falling back to existing root SSH keys..."
+            GITHUB_IDENTITY_FILE=""
+            if github_ssh_auth_works; then
+                working_key="default"
+                echo "GitHub SSH auth verified using root's default keys."
             fi
         fi
-    done
-
-    if [[ -n "$best_key" ]]; then
-        GITHUB_IDENTITY_FILE="$best_key"
     fi
-
-    if github_ssh_auth_works; then
-        echo "GitHub SSH auth verified using dietpi key, will use SSH for GitHub repos"
-    else
-        echo "Warning: GitHub SSH auth failed with dietpi key, will keep HTTPS for GitHub repos"
+    
+    if [[ -z "$working_key" ]]; then
+        echo "Warning: No working GitHub SSH keys found, will keep HTTPS for GitHub repos"
         GITHUB_IDENTITY_FILE=""
     fi
 }
