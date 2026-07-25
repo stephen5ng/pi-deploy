@@ -69,7 +69,7 @@ migrate_service_address_to_dhcp() {
     echo "WARNING: Applying this live may briefly interrupt networking and SSH."
     echo "         DHCP failure will automatically restore the current configuration."
 
-    if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    if ! { : < /dev/tty > /dev/tty; } 2>/dev/null; then
         echo "No interactive terminal is available; leaving the network unchanged."
         return 0
     fi
@@ -541,10 +541,6 @@ echo "Cleaning up obsolete service units..."
 expected_address_services=""
 for ((app_idx=0; app_idx<app_count; app_idx++)); do
     app_name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
-    
-    if [[ -n "$SELECTED_APP" && "$app_name" != "$SELECTED_APP" ]]; then
-        continue
-    fi
     
     has_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
     if [[ -n "$has_address" ]]; then
