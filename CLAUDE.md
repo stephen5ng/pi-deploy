@@ -45,6 +45,7 @@ cat /etc/systemd/system/lexacube.service
 
 The entire deployment is driven by `apps.yaml`, which defines:
 - Application repository, branch, and installation path
+- Dependencies between selectable apps (`requires`)
 - System package dependencies (`apt_packages`)
 - External library dependencies (repos, build commands, Python bindings)
 - Systemd service configuration (exec command, user)
@@ -120,18 +121,19 @@ Services created by bootstrap.sh have:
 
 Apps may define `service_address.address` and an optional
 `service_address.interface` (`auto` by default). Bootstrap installs a separate
-oneshot unit that claims the address before the app starts and keeps it across
-app restarts. The helper refuses to claim an address already in use by another
-host. If the service address is still configured as the DietPi host's primary
-static address, bootstrap offers an interactive, idempotent migration to DHCP.
-The live change runs as a delayed systemd job and restores the original
-`/etc/network/interfaces` configuration if DHCP fails.
+oneshot unit that claims the address before the app starts. The address unit is
+part of the application lifecycle: stopping the app releases the address, and
+starting it claims the address again. The helper refuses to claim an address
+already in use by another host. Legacy hosts where the service address is still
+the primary static address must be migrated to DHCP administratively before
+deployment.
 
 Pass one or more app names to bootstrap only those apps during initial
 provisioning, for example `sudo ./bootstrap.sh lexacube nfc-control knockstrip`.
 With no app names, bootstrap installs every configured app. Selection is
 additive: bootstrap never disables services installed by an earlier run, and
-an unknown app name fails before system configuration begins.
+an unknown app name or incomplete `requires` selection fails before system
+configuration begins.
 
 ### Idempotency
 

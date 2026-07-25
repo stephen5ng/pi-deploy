@@ -41,116 +41,6 @@ git_clone_or_update() {
     fi
 }
 
-migrate_service_address_to_dhcp() {
-    local app_name=$1
-    local address_with_prefix=$2
-    local address=${address_with_prefix%%/*}
-    local interfaces_file=/etc/network/interfaces
-    local interface
-    local answer
-    local backup_directory=/var/backups/pi-deploy
-    local backup_file
-    local temporary_file
-    local migration_helper=/usr/local/sbin/apply-dhcp-migration
-
-    interface=$(
-        ip -o -4 address show \
-            | awk -v target="$address" \
-                '!found && ($4 == target || index($4, target "/") == 1) { print $2; found = 1 }'
-    )
-    [[ -n "$interface" && -f "$interfaces_file" ]] || return 0
-
-    # Only migrate the DietPi/ifupdown static stanza which owns this address.
-    # A DHCP interface which already has the service address needs no migration.
-    if ! awk -v interface="$interface" -v target="$address" '
-        $1 == "iface" {
-            in_target = ($2 == interface && $3 == "inet" && $4 == "static")
-            next
-        }
-        in_target && $1 == "address" {
-            candidate = $2
-            sub(/\/.*/, "", candidate)
-            if (candidate == target) found = 1
-        }
-        END { exit(found ? 0 : 1) }
-    ' "$interfaces_file"; then
-        return 0
-    fi
-
-    echo ""
-    echo "Legacy network configuration detected:"
-    echo "  $interface uses $address_with_prefix as its persistent primary address."
-    echo "  It can be changed to DHCP, while $app_name keeps $address_with_prefix"
-    echo "  through ${app_name}-address.service."
-    echo ""
-    echo "WARNING: Applying this live may briefly interrupt networking and SSH."
-    echo "         DHCP failure will automatically restore the current configuration."
-
-    if ! { : < /dev/tty > /dev/tty; } 2>/dev/null; then
-        echo "No interactive terminal is available; leaving the network unchanged."
-        return 0
-    fi
-
-    printf "Migrate %s to DHCP now? [y/N] " "$interface" > /dev/tty
-    if ! IFS= read -r answer < /dev/tty; then
-        echo "Unable to read confirmation; leaving the network unchanged."
-        return 0
-    fi
-    case "$answer" in
-        y|Y|yes|YES|Yes) ;;
-        *)
-            echo "Network migration declined."
-            return 0
-            ;;
-    esac
-
-    for command_name in ifup ifdown ip systemd-run; do
-        if ! command -v "$command_name" >/dev/null 2>&1; then
-            echo "Cannot migrate safely: required command '$command_name' is unavailable." >&2
-            return 1
-        fi
-    done
-
-    mkdir -p "$backup_directory"
-    backup_file="$backup_directory/interfaces.before-${app_name}-service-address"
-    cp -a "$interfaces_file" "$backup_file"
-    install -m 755 "$SCRIPT_DIR/scripts/apply-dhcp-migration.sh" "$migration_helper"
-
-    temporary_file=$(mktemp)
-    awk -v interface="$interface" '
-        $1 == "iface" {
-            in_target = ($2 == interface && $3 == "inet" && $4 == "static")
-            if (in_target) $4 = "dhcp"
-            print
-            next
-        }
-        in_target && $1 ~ /^(address|netmask|network|broadcast|gateway|dns-nameservers|dns-search)$/ {
-            next
-        }
-        { print }
-    ' "$interfaces_file" > "$temporary_file"
-    install -m 644 "$temporary_file" "$interfaces_file"
-    rm -f "$temporary_file"
-
-    if ! systemd-run \
-            --unit="${app_name}-network-migration" \
-            --on-active=5s \
-            --collect \
-            "$migration_helper" \
-            "$interface" \
-            "$address_with_prefix" \
-            "$interfaces_file" \
-            "$backup_file" \
-            "$app_name"; then
-        install -m 644 "$backup_file" "$interfaces_file"
-        echo "Unable to schedule the live migration; restored the static configuration." >&2
-        return 1
-    fi
-
-    echo "DHCP migration scheduled in 5 seconds."
-    echo "If SSH disconnects, reconnect using the Pi's DHCP address or hostname."
-}
-
 app_count=$(yq -r '.apps | length' "$CONFIG")
 
 # Validate the complete selection before making any system changes. App
@@ -158,10 +48,12 @@ app_count=$(yq -r '.apps | length' "$CONFIG")
 # services installed by an earlier bootstrap.
 for selected_app in "${SELECTED_APPS[@]}"; do
     selected_app_found=false
+    selected_app_idx=-1
     for ((app_idx=0; app_idx<app_count; app_idx++)); do
         configured_app=$(yq -r ".apps[$app_idx].name" "$CONFIG")
         if [[ "$configured_app" == "$selected_app" ]]; then
             selected_app_found=true
+            selected_app_idx=$app_idx
             break
         fi
     done
@@ -171,6 +63,15 @@ for selected_app in "${SELECTED_APPS[@]}"; do
         yq -r '.apps[].name | "  " + .' "$CONFIG" >&2
         exit 2
     fi
+
+    required_apps=$(yq -r ".apps[$selected_app_idx].requires[]? // empty" "$CONFIG")
+    while IFS= read -r required_app; do
+        [[ -n "$required_app" ]] || continue
+        if ! app_is_selected "$required_app"; then
+            echo "App '$selected_app' requires '$required_app'; include both app names." >&2
+            exit 2
+        fi
+    done <<< "$required_apps"
 done
 
 if [[ ${#SELECTED_APPS[@]} -gt 0 ]]; then
@@ -397,6 +298,7 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
 Description=$name service address
 Wants=network-online.target
 After=network-online.target
+PartOf=$name.service
 Before=$name.service
 
 [Service]
@@ -404,9 +306,6 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=$address_helper start $service_address $service_address_interface
 ExecStop=$address_helper stop $service_address $service_address_interface
-
-[Install]
-WantedBy=multi-user.target
 EOF
         chmod 644 "/etc/systemd/system/$address_service"
         address_unit="Requires=$address_service
@@ -450,8 +349,9 @@ EOF
     chmod 644 "/etc/systemd/system/${name}.service"
     systemctl daemon-reload
     if [[ -n "$service_address" ]]; then
-        systemctl enable "$address_service"
-        systemctl restart "$address_service"
+        # The address belongs to the application lifecycle and must not start
+        # independently at boot.
+        systemctl disable "$address_service" 2>/dev/null || true
     fi
     systemctl enable "${name}.service"
     systemctl restart "${name}.service"
@@ -463,15 +363,18 @@ done
 # CONFIGURE SYSTEM (shared, run once)
 # ============================================================================
 
-# Configure mosquitto to listen on all interfaces
-echo "Configuring mosquitto for network access..."
-mkdir -p /etc/mosquitto/conf.d
-cat > /etc/mosquitto/conf.d/network.conf <<'MQTT_EOF'
+# Configure mosquitto only when provisioning an app that uses it. This keeps
+# selected deployments self-contained on fresh hosts.
+if app_is_selected lexacube || app_is_selected nfc-control; then
+    echo "Configuring mosquitto for network access..."
+    mkdir -p /etc/mosquitto/conf.d
+    cat > /etc/mosquitto/conf.d/network.conf <<'MQTT_EOF'
 listener 1883 0.0.0.0
 allow_anonymous true
 persistence false
 MQTT_EOF
-systemctl restart mosquitto
+    systemctl restart mosquitto
+fi
 
 echo "Configuring ALSA..."
 cat > /etc/asound.conf <<'ALSA_EOF'
@@ -571,21 +474,6 @@ if [[ -f "$SCRIPT_DIR/scripts/reliability.sh" ]]; then
 else
     echo "  Warning: scripts/reliability.sh not found, skipping hardening"
 fi
-
-# Migrate a legacy primary service address only after all deployment work is
-# complete. The live interface change runs as a detached systemd job.
-for ((app_idx=0; app_idx<app_count; app_idx++)); do
-    name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
-
-    if ! app_is_selected "$name"; then
-        continue
-    fi
-
-    service_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
-    if [[ -n "$service_address" ]]; then
-        migrate_service_address_to_dhcp "$name" "$service_address"
-    fi
-done
 
 echo ""
 echo "=== Bootstrap complete ==="

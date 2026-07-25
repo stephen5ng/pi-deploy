@@ -36,6 +36,8 @@ apps:
     exec: /opt/lexacube/cube_env/bin/python3 /opt/nfc-control/nfc_control_daemon.py
     user: root
     after: "network.target mosquitto.service"
+    requires:
+      - lexacube
 
   - name: knockstrip
     repo: "https://github.com/stephen5ng/knockstrip"
@@ -49,4 +51,3 @@ apps:
       - SUDO_GID=1000
     apt_packages:
       - libportaudio2
-
