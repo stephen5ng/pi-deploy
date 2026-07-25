@@ -544,7 +544,10 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     
     has_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
     if [[ -n "$has_address" ]]; then
-        expected_address_services+=" ${app_name}-address.service "
+        # Preserve the address unit if we are deploying it now, OR if its parent app is still enabled
+        if [[ -z "$SELECTED_APP" ]] || [[ "$SELECTED_APP" == "$app_name" ]] || systemctl is-enabled "${app_name}.service" &>/dev/null; then
+            expected_address_services+=" ${app_name}-address.service "
+        fi
     fi
 done
 
