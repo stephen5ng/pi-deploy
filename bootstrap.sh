@@ -22,21 +22,161 @@ app_is_selected() {
     return 1
 }
 
+# =============================================================================
+# SSH SETUP FOR ROOT
+# Bootstrap runs as root, but SSH keys are typically in the dietpi user home.
+# Copy dietpi SSH keys to root so git clone/pull works with GitHub SSH auth.
+#
+# This only applies if GitHub SSH authentication actually works - otherwise we
+# keep using HTTPS which works fine for public repositories.
+# =============================================================================
+
+# GitHub SSH host keys (pinned for security, not ssh-keyscan)
+# See: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+GITHUB_RSA_HOST_KEY="github.com ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEAq2A7hRGmdnm9tUDbO9IDSwBK6TbQa+PXYPCPy7rb/tT5ubbMy3phfIWKUQQF0su7lKTV0qVRtoylf6PqPxLzLjl2vu+Yc/wwHEmNs68tpJchOaNFk8bdK6UmvFAiZrmVS/cpuMlZ8+Y0baQpMpLfZ0DJAGHdB2V38tnOKDFjLUKBdP/FoKRs8K8NKkI6PZwcPJAwpvydRprLHm1Xo7vhDhRSA/nNSItv+wICMn+GhA6s+QYwt/fAv+QH3/X1w=="
+GITHUB_ED25519_HOST_KEY="github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
+# Managed known_hosts file for GitHub only (avoids touching root's known_hosts)
+GITHUB_KNOWN_HOSTS="/root/.ssh/github_known_hosts"
+GITHUB_IDENTITY_FILE=""
+
+# Verify SSH authentication to GitHub works
+# Note: GitHub SSH returns exit code 1 even on success, so we capture output first
+# Uses managed known_hosts file with StrictHostKeyChecking=yes for MITM protection
+github_ssh_auth_works() {
+    local identity_opts=""
+    if [[ -n "$GITHUB_IDENTITY_FILE" ]]; then
+        identity_opts="-i $GITHUB_IDENTITY_FILE -o IdentitiesOnly=yes"
+    fi
+    local ssh_output
+    ssh_output=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$GITHUB_KNOWN_HOSTS" $identity_opts -T git@github.com 2>&1 || true)
+    echo "$ssh_output" | grep -q "successfully authenticated"
+}
+
+# Convert HTTPS GitHub URL to SSH
+convert_https_to_ssh() {
+    local repo=$1
+    # Convert https://github.com/user/repo.git -> git@github.com:user/repo
+    # Also handles URLs without .git suffix
+    echo "$repo" | sed -E 's,https://github.com/([^/]+)/([^/]+)\.git.*,git@github.com:\1/\2,;s,https://github.com/([^/]+)/([^/]+)$,git@github.com:\1/\2,'
+}
+
+setup_ssh_for_root() {
+    local dietpi_home="/home/dietpi"
+    local root_ssh="/root/.ssh"
+    local dietpi_ssh="$dietpi_home/.ssh"
+
+    # Ensure SSH client is available before any SSH operations
+    if ! command -v ssh &> /dev/null; then
+        apt-get update -qq
+        apt-get install -y -qq openssh-client
+    fi
+
+    # Create .ssh directory with correct permissions
+    mkdir -p "$root_ssh"
+    chmod 700 "$root_ssh"
+
+    # Write pinned GitHub host keys to managed file (do not touch root's main known_hosts)
+    {
+        echo "$GITHUB_RSA_HOST_KEY"
+        echo "$GITHUB_ED25519_HOST_KEY"
+    } > "$GITHUB_KNOWN_HOSTS"
+    chmod 644 "$GITHUB_KNOWN_HOSTS"
+
+    local working_key=""
+
+    # Try DietPi keys first, testing all available types
+    if [[ -d "$dietpi_ssh" ]]; then
+        echo "Checking for DietPi SSH keys..."
+        for key_type in ed25519 rsa; do
+            if [[ -f "$dietpi_ssh/id_$key_type" ]]; then
+                local new_key="$root_ssh/id_dietpi_$key_type"
+                cp "$dietpi_ssh/id_$key_type" "$new_key"
+                cp "$dietpi_ssh/id_${key_type}.pub" "${new_key}.pub" 2>/dev/null || true
+                chmod 600 "$new_key"
+                chmod 644 "${new_key}.pub" 2>/dev/null || true
+
+                GITHUB_IDENTITY_FILE="$new_key"
+                if github_ssh_auth_works; then
+                    working_key="$new_key"
+                    echo "GitHub SSH auth verified using DietPi $key_type key."
+                    break
+                else
+                    GITHUB_IDENTITY_FILE=""
+                fi
+            fi
+        done
+    fi
+
+    # If no DietPi key worked, fall back to root's default keys
+    if [[ -z "$working_key" ]]; then
+        if [[ -f "$root_ssh/id_ed25519" ]] || [[ -f "$root_ssh/id_rsa" ]]; then
+            echo "Falling back to existing root SSH keys..."
+            GITHUB_IDENTITY_FILE=""
+            if github_ssh_auth_works; then
+                working_key="default"
+                echo "GitHub SSH auth verified using root's default keys."
+            fi
+        fi
+    fi
+
+    if [[ -z "$working_key" ]]; then
+        echo "Warning: No working GitHub SSH keys found, will keep HTTPS for GitHub repos"
+        GITHUB_IDENTITY_FILE=""
+    fi
+}
+
 # Clone or update a git repository
 git_clone_or_update() {
     local repo=$1
     local dest=$2
     local branch=${3:-}
+    local use_ssh=false
+    local current_url=""
+
+    if github_ssh_auth_works; then
+        use_ssh=true
+    fi
+
+    local ssh_opts="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS"
+    if [[ -n "$GITHUB_IDENTITY_FILE" ]]; then
+        ssh_opts="$ssh_opts -i $GITHUB_IDENTITY_FILE -o IdentitiesOnly=yes"
+    fi
 
     if [[ -d "$dest/.git" ]]; then
         echo "Updating $dest..."
-        git -C "$dest" pull
+        current_url=$(git -C "$dest" remote get-url origin 2>/dev/null || echo "")
+        if [[ "$use_ssh" == "true" && "$current_url" == https://github.com/* ]]; then
+            ssh_url=$(convert_https_to_ssh "$current_url")
+            echo "  Converting HTTPS remote to SSH: $ssh_url"
+            git -C "$dest" remote set-url origin "$ssh_url"
+            current_url="$ssh_url"
+        fi
+
+        if [[ "$current_url" == *@github.com:* || "$current_url" == ssh://*github.com/* ]]; then
+            GIT_SSH_COMMAND="ssh $ssh_opts" git -C "$dest" pull
+        else
+            git -C "$dest" pull
+        fi
     else
         echo "Cloning $repo..."
-        if [[ -n "$branch" ]]; then
-            git clone --branch "$branch" "$repo" "$dest"
+        if [[ "$use_ssh" == "true" && "$repo" == https://github.com/* ]]; then
+            repo=$(convert_https_to_ssh "$repo")
+            echo "  Using SSH: $repo"
+        fi
+
+        if [[ "$repo" == *@github.com:* || "$repo" == ssh://*github.com/* ]]; then
+            if [[ -n "$branch" ]]; then
+                GIT_SSH_COMMAND="ssh $ssh_opts" git clone --branch "$branch" "$repo" "$dest"
+            else
+                GIT_SSH_COMMAND="ssh $ssh_opts" git clone "$repo" "$dest"
+            fi
         else
-            git clone "$repo" "$dest"
+            if [[ -n "$branch" ]]; then
+                git clone --branch "$branch" "$repo" "$dest"
+            else
+                git clone "$repo" "$dest"
+            fi
         fi
     fi
 }
@@ -73,6 +213,8 @@ for selected_app in "${SELECTED_APPS[@]}"; do
         fi
     done <<< "$required_apps"
 done
+
+setup_ssh_for_root
 
 if [[ ${#SELECTED_APPS[@]} -gt 0 ]]; then
     echo "=== Bootstrapping ${SELECTED_APPS[*]} from $CONFIG ==="
