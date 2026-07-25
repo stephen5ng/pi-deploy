@@ -19,13 +19,18 @@ GITHUB_ED25519_HOST_KEY="github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkV
 
 # Managed known_hosts file for GitHub only (avoids touching root's known_hosts)
 GITHUB_KNOWN_HOSTS="/root/.ssh/github_known_hosts"
+GITHUB_IDENTITY_FILE=""
 
 # Verify SSH authentication to GitHub works
 # Note: GitHub SSH returns exit code 1 even on success, so we capture output first
 # Uses managed known_hosts file with StrictHostKeyChecking=yes for MITM protection
 github_ssh_auth_works() {
+    local identity_opts=""
+    if [[ -n "$GITHUB_IDENTITY_FILE" ]]; then
+        identity_opts="-i $GITHUB_IDENTITY_FILE -o IdentitiesOnly=yes"
+    fi
     local ssh_output
-    ssh_output=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$GITHUB_KNOWN_HOSTS" -T git@github.com 2>&1 || true)
+    ssh_output=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$GITHUB_KNOWN_HOSTS" $identity_opts -T git@github.com 2>&1 || true)
     echo "$ssh_output" | grep -q "successfully authenticated"
 }
 
@@ -65,10 +70,8 @@ setup_ssh_for_root() {
         if github_ssh_auth_works; then
             echo "GitHub SSH auth verified, will use SSH for GitHub repos"
             return 0
-        else
-            echo "GitHub SSH auth failed, will keep HTTPS for GitHub repos"
-            return 0
         fi
+        echo "Warning: Existing root keys failed GitHub authentication; trying DietPi keys..."
     fi
 
     # Check if dietpi has SSH keys
@@ -79,17 +82,29 @@ setup_ssh_for_root() {
 
     echo "Setting up SSH for root using dietpi keys..."
 
-    # Copy SSH keys
-    cp "$dietpi_ssh"/id_* "$root_ssh/" 2>/dev/null || true
+    local best_key=""
+    for key_type in ed25519 rsa; do
+        if [[ -f "$dietpi_ssh/id_$key_type" ]]; then
+            local new_key="$root_ssh/id_dietpi_$key_type"
+            cp "$dietpi_ssh/id_$key_type" "$new_key"
+            cp "$dietpi_ssh/id_${key_type}.pub" "${new_key}.pub" 2>/dev/null || true
+            chmod 600 "$new_key"
+            chmod 644 "${new_key}.pub" 2>/dev/null || true
+            if [[ -z "$best_key" ]]; then
+                best_key="$new_key"
+            fi
+        fi
+    done
 
-    # Set correct permissions
-    chmod 600 "$root_ssh"/id_* 2>/dev/null || true
-    chmod 644 "$root_ssh"/*.pub 2>/dev/null || true
+    if [[ -n "$best_key" ]]; then
+        GITHUB_IDENTITY_FILE="$best_key"
+    fi
 
     if github_ssh_auth_works; then
-        echo "GitHub SSH auth verified, will use SSH for GitHub repos"
+        echo "GitHub SSH auth verified using dietpi key, will use SSH for GitHub repos"
     else
-        echo "Warning: GitHub SSH auth failed, will keep HTTPS for GitHub repos"
+        echo "Warning: GitHub SSH auth failed with dietpi key, will keep HTTPS for GitHub repos"
+        GITHUB_IDENTITY_FILE=""
     fi
 }
 
@@ -107,6 +122,11 @@ git_clone_or_update() {
         use_ssh=true
     fi
 
+    local ssh_opts="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS"
+    if [[ -n "$GITHUB_IDENTITY_FILE" ]]; then
+        ssh_opts="$ssh_opts -i $GITHUB_IDENTITY_FILE -o IdentitiesOnly=yes"
+    fi
+
     if [[ -d "$dest/.git" ]]; then
         echo "Updating $dest..."
         current_url=$(git -C "$dest" remote get-url origin 2>/dev/null || echo "")
@@ -118,7 +138,7 @@ git_clone_or_update() {
         fi
         
         if [[ "$current_url" == *@github.com:* || "$current_url" == ssh://*github.com/* ]]; then
-            GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS" git -C "$dest" pull
+            GIT_SSH_COMMAND="ssh $ssh_opts" git -C "$dest" pull
         else
             git -C "$dest" pull
         fi
@@ -130,18 +150,18 @@ git_clone_or_update() {
         fi
         
         if [[ "$repo" == *@github.com:* || "$repo" == ssh://*github.com/* ]]; then
-            export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS"
+            if [[ -n "$branch" ]]; then
+                GIT_SSH_COMMAND="ssh $ssh_opts" git clone --branch "$branch" "$repo" "$dest"
+            else
+                GIT_SSH_COMMAND="ssh $ssh_opts" git clone "$repo" "$dest"
+            fi
         else
-            unset GIT_SSH_COMMAND || true
+            if [[ -n "$branch" ]]; then
+                git clone --branch "$branch" "$repo" "$dest"
+            else
+                git clone "$repo" "$dest"
+            fi
         fi
-        
-        if [[ -n "$branch" ]]; then
-            git clone --branch "$branch" "$repo" "$dest"
-        else
-            git clone "$repo" "$dest"
-        fi
-        
-        unset GIT_SSH_COMMAND || true
     fi
 }
 
