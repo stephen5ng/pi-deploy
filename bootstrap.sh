@@ -3,7 +3,24 @@ set -euo pipefail
 
 CONFIG="apps.yaml"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-SELECTED_APP=${1:-}
+SELECTED_APPS=("$@")
+
+app_is_selected() {
+    local candidate=$1
+    local selected_app
+
+    if [[ ${#SELECTED_APPS[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    for selected_app in "${SELECTED_APPS[@]}"; do
+        if [[ "$candidate" == "$selected_app" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
 
 # Clone or update a git repository
 git_clone_or_update() {
@@ -134,13 +151,34 @@ migrate_service_address_to_dhcp() {
     echo "If SSH disconnects, reconnect using the Pi's DHCP address or hostname."
 }
 
-if [[ -n "$SELECTED_APP" ]]; then
-    echo "=== Bootstrapping $SELECTED_APP from $CONFIG ==="
+app_count=$(yq -r '.apps | length' "$CONFIG")
+
+# Validate the complete selection before making any system changes. App
+# selection controls what is installed during this run; it never disables
+# services installed by an earlier bootstrap.
+for selected_app in "${SELECTED_APPS[@]}"; do
+    selected_app_found=false
+    for ((app_idx=0; app_idx<app_count; app_idx++)); do
+        configured_app=$(yq -r ".apps[$app_idx].name" "$CONFIG")
+        if [[ "$configured_app" == "$selected_app" ]]; then
+            selected_app_found=true
+            break
+        fi
+    done
+
+    if [[ "$selected_app_found" != true ]]; then
+        echo "Unknown app '$selected_app'. Available apps:" >&2
+        yq -r '.apps[].name | "  " + .' "$CONFIG" >&2
+        exit 2
+    fi
+done
+
+if [[ ${#SELECTED_APPS[@]} -gt 0 ]]; then
+    echo "=== Bootstrapping ${SELECTED_APPS[*]} from $CONFIG ==="
 else
     echo "=== Bootstrapping all apps from $CONFIG ==="
 fi
 
-app_count=$(yq -r '.apps | length' "$CONFIG")
 echo "Found $app_count app(s) in config"
 echo ""
 
@@ -180,8 +218,8 @@ fi
 # ============================================================================
 for ((app_idx=0; app_idx<app_count; app_idx++)); do
     name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
-    
-    if [[ -n "$SELECTED_APP" && "$name" != "$SELECTED_APP" ]]; then
+
+    if ! app_is_selected "$name"; then
         continue
     fi
 
@@ -534,48 +572,15 @@ else
     echo "  Warning: scripts/reliability.sh not found, skipping hardening"
 fi
 
-# ============================================================================
-# CLEANUP OBSOLETE SERVICES
-# ============================================================================
-echo "Cleaning up obsolete service units..."
-expected_address_services=""
-for ((app_idx=0; app_idx<app_count; app_idx++)); do
-    app_name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
-    
-    has_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
-    if [[ -n "$has_address" ]]; then
-        # Preserve the address unit if we are deploying it now, OR if its parent app is still enabled
-        if [[ -z "$SELECTED_APP" ]] || [[ "$SELECTED_APP" == "$app_name" ]] || systemctl is-enabled "${app_name}.service" &>/dev/null; then
-            expected_address_services+=" ${app_name}-address.service "
-        fi
-    fi
-done
-
-for existing_svc_path in /etc/systemd/system/*-address.service; do
-    [[ -f "$existing_svc_path" ]] || continue
-    
-    if ! grep -q "/usr/local/sbin/service-address" "$existing_svc_path"; then
-        continue
-    fi
-
-    svc_name=$(basename "$existing_svc_path")
-    if [[ "$expected_address_services" != *" $svc_name "* ]]; then
-        echo "Removing obsolete service address unit: $svc_name"
-        systemctl disable --now "$svc_name" 2>/dev/null || true
-        rm -f "$existing_svc_path"
-    fi
-done
-systemctl daemon-reload
-
 # Migrate a legacy primary service address only after all deployment work is
 # complete. The live interface change runs as a detached systemd job.
 for ((app_idx=0; app_idx<app_count; app_idx++)); do
     name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
-    
-    if [[ -n "$SELECTED_APP" && "$name" != "$SELECTED_APP" ]]; then
+
+    if ! app_is_selected "$name"; then
         continue
     fi
-    
+
     service_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
     if [[ -n "$service_address" ]]; then
         migrate_service_address_to_dhcp "$name" "$service_address"

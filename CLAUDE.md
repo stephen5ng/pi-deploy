@@ -12,6 +12,10 @@ This repository automates deployment of applications on Raspberry Pi running Die
 ```bash
 # Run complete bootstrap (idempotent)
 sudo ./bootstrap.sh
+
+# Bootstrap only the named apps; selection is additive
+sudo ./bootstrap.sh lexacube nfc-control
+sudo ./bootstrap.sh lexacube nfc-control knockstrip
 ```
 
 ### Service Management
@@ -122,6 +126,12 @@ host. If the service address is still configured as the DietPi host's primary
 static address, bootstrap offers an interactive, idempotent migration to DHCP.
 The live change runs as a delayed systemd job and restores the original
 `/etc/network/interfaces` configuration if DHCP fails.
+
+Pass one or more app names to bootstrap only those apps during initial
+provisioning, for example `sudo ./bootstrap.sh lexacube nfc-control knockstrip`.
+With no app names, bootstrap installs every configured app. Selection is
+additive: bootstrap never disables services installed by an earlier run, and
+an unknown app name fails before system configuration begins.
 
 ### Idempotency
 
