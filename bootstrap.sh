@@ -101,6 +101,7 @@ git_clone_or_update() {
     local dest=$2
     local branch=${3:-}
     local use_ssh=false
+    local current_url=""
 
     if github_ssh_auth_works; then
         use_ssh=true
@@ -108,27 +109,39 @@ git_clone_or_update() {
 
     if [[ -d "$dest/.git" ]]; then
         echo "Updating $dest..."
-        if [[ "$use_ssh" == "true" ]]; then
-            current_url=$(git -C "$dest" remote get-url origin 2>/dev/null || echo "")
-            if [[ "$current_url" == https://github.com/* ]]; then
-                ssh_url=$(convert_https_to_ssh "$current_url")
-                echo "  Converting HTTPS remote to SSH: $ssh_url"
-                git -C "$dest" remote set-url origin "$ssh_url"
-            fi
+        current_url=$(git -C "$dest" remote get-url origin 2>/dev/null || echo "")
+        if [[ "$use_ssh" == "true" && "$current_url" == https://github.com/* ]]; then
+            ssh_url=$(convert_https_to_ssh "$current_url")
+            echo "  Converting HTTPS remote to SSH: $ssh_url"
+            git -C "$dest" remote set-url origin "$ssh_url"
+            current_url="$ssh_url"
         fi
-        GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS" git -C "$dest" pull
+        
+        if [[ "$current_url" == *@github.com:* || "$current_url" == ssh://*github.com/* ]]; then
+            GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS" git -C "$dest" pull
+        else
+            git -C "$dest" pull
+        fi
     else
         echo "Cloning $repo..."
         if [[ "$use_ssh" == "true" && "$repo" == https://github.com/* ]]; then
             repo=$(convert_https_to_ssh "$repo")
             echo "  Using SSH: $repo"
         fi
-        GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS"
+        
+        if [[ "$repo" == *@github.com:* || "$repo" == ssh://*github.com/* ]]; then
+            export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS"
+        else
+            unset GIT_SSH_COMMAND || true
+        fi
+        
         if [[ -n "$branch" ]]; then
             git clone --branch "$branch" "$repo" "$dest"
         else
             git clone "$repo" "$dest"
         fi
+        
+        unset GIT_SSH_COMMAND || true
     fi
 }
 
