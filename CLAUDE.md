@@ -12,6 +12,10 @@ This repository automates deployment of applications on Raspberry Pi running Die
 ```bash
 # Run complete bootstrap (idempotent)
 sudo ./bootstrap.sh
+
+# Bootstrap only the named apps; selection is additive
+sudo ./bootstrap.sh lexacube nfc-control
+sudo ./bootstrap.sh lexacube nfc-control knockstrip
 ```
 
 ### Service Management
@@ -41,6 +45,7 @@ cat /etc/systemd/system/lexacube.service
 
 The entire deployment is driven by `apps.yaml`, which defines:
 - Application repository, branch, and installation path
+- Dependencies between selectable apps (`requires`)
 - System package dependencies (`apt_packages`)
 - External library dependencies (repos, build commands, Python bindings)
 - Systemd service configuration (exec command, user)
@@ -56,7 +61,7 @@ The entire deployment is driven by `apps.yaml`, which defines:
 5. **Python Environment**: Create venv, install requirements.txt
 6. **Install Python Bindings**: Link Python wrappers for C libraries into venv
 7. **System Configuration**: ALSA audio, CPU isolation (isolcpus=3)
-8. **Service Setup**: Generate systemd service, set permissions, enable/start
+8. **Service Setup**: Generate systemd service and optional service-address unit, set permissions, enable/start
 
 Key characteristic: **Path substitution pattern** in dependency build commands uses `{path}` placeholder that gets replaced with actual installation path at runtime.
 
@@ -93,6 +98,9 @@ When modifying application configuration:
 **lexacube** — LED matrix game
 - Lives in: `/opt/lexacube`
 - Runs: `/opt/lexacube/runpygame.sh`
+- Claims `192.168.8.247/24` as a secondary address through
+  `lexacube-address.service`; the Pi's ordinary DHCP address remains available
+  for administration
 - Depends on: rpi-rgb-led-matrix library for LED control
 - Uses: Python venv at `/opt/lexacube/cube_env`
 - Output: Written to `/opt/lexacube/output/` (owned by daemon user)
@@ -110,6 +118,22 @@ Services created by bootstrap.sh have:
 - `After` dependencies from the `after` field in apps.yaml (defaults to `network.target`)
 - WorkingDirectory set to app path
 - ExecStart pointing to configured exec script
+
+Apps may define `service_address.address` and an optional
+`service_address.interface` (`auto` by default). Bootstrap installs a separate
+oneshot unit that claims the address before the app starts. The address unit is
+part of the application lifecycle: stopping the app releases the address, and
+starting it claims the address again. The helper refuses to claim an address
+already in use by another host. Legacy hosts where the service address is still
+the primary static address must be migrated to DHCP administratively before
+deployment.
+
+Pass one or more app names to bootstrap only those apps during initial
+provisioning, for example `sudo ./bootstrap.sh lexacube nfc-control knockstrip`.
+With no app names, bootstrap installs every configured app. Selection is
+additive: bootstrap never disables services installed by an earlier run, and
+an unknown app name or incomplete `requires` selection fails before system
+configuration begins.
 
 ### Idempotency
 

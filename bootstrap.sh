@@ -2,6 +2,25 @@
 set -euo pipefail
 
 CONFIG="apps.yaml"
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+SELECTED_APPS=("$@")
+
+app_is_selected() {
+    local candidate=$1
+    local selected_app
+
+    if [[ ${#SELECTED_APPS[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    for selected_app in "${SELECTED_APPS[@]}"; do
+        if [[ "$candidate" == "$selected_app" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
 
 # =============================================================================
 # SSH SETUP FOR ROOT
@@ -65,7 +84,7 @@ setup_ssh_for_root() {
     chmod 644 "$GITHUB_KNOWN_HOSTS"
 
     local working_key=""
-    
+
     # Try DietPi keys first, testing all available types
     if [[ -d "$dietpi_ssh" ]]; then
         echo "Checking for DietPi SSH keys..."
@@ -76,7 +95,7 @@ setup_ssh_for_root() {
                 cp "$dietpi_ssh/id_${key_type}.pub" "${new_key}.pub" 2>/dev/null || true
                 chmod 600 "$new_key"
                 chmod 644 "${new_key}.pub" 2>/dev/null || true
-                
+
                 GITHUB_IDENTITY_FILE="$new_key"
                 if github_ssh_auth_works; then
                     working_key="$new_key"
@@ -88,7 +107,7 @@ setup_ssh_for_root() {
             fi
         done
     fi
-    
+
     # If no DietPi key worked, fall back to root's default keys
     if [[ -z "$working_key" ]]; then
         if [[ -f "$root_ssh/id_ed25519" ]] || [[ -f "$root_ssh/id_rsa" ]]; then
@@ -100,14 +119,12 @@ setup_ssh_for_root() {
             fi
         fi
     fi
-    
+
     if [[ -z "$working_key" ]]; then
         echo "Warning: No working GitHub SSH keys found, will keep HTTPS for GitHub repos"
         GITHUB_IDENTITY_FILE=""
     fi
 }
-
-setup_ssh_for_root
 
 # Clone or update a git repository
 git_clone_or_update() {
@@ -135,7 +152,7 @@ git_clone_or_update() {
             git -C "$dest" remote set-url origin "$ssh_url"
             current_url="$ssh_url"
         fi
-        
+
         if [[ "$current_url" == *@github.com:* || "$current_url" == ssh://*github.com/* ]]; then
             GIT_SSH_COMMAND="ssh $ssh_opts" git -C "$dest" pull
         else
@@ -147,7 +164,7 @@ git_clone_or_update() {
             repo=$(convert_https_to_ssh "$repo")
             echo "  Using SSH: $repo"
         fi
-        
+
         if [[ "$repo" == *@github.com:* || "$repo" == ssh://*github.com/* ]]; then
             if [[ -n "$branch" ]]; then
                 GIT_SSH_COMMAND="ssh $ssh_opts" git clone --branch "$branch" "$repo" "$dest"
@@ -164,11 +181,48 @@ git_clone_or_update() {
     fi
 }
 
-
-echo "=== Bootstrapping from $CONFIG ==="
-
 app_count=$(yq -r '.apps | length' "$CONFIG")
-echo "Found $app_count app(s) to deploy"
+
+# Validate the complete selection before making any system changes. App
+# selection controls what is installed during this run; it never disables
+# services installed by an earlier bootstrap.
+for selected_app in "${SELECTED_APPS[@]}"; do
+    selected_app_found=false
+    selected_app_idx=-1
+    for ((app_idx=0; app_idx<app_count; app_idx++)); do
+        configured_app=$(yq -r ".apps[$app_idx].name" "$CONFIG")
+        if [[ "$configured_app" == "$selected_app" ]]; then
+            selected_app_found=true
+            selected_app_idx=$app_idx
+            break
+        fi
+    done
+
+    if [[ "$selected_app_found" != true ]]; then
+        echo "Unknown app '$selected_app'. Available apps:" >&2
+        yq -r '.apps[].name | "  " + .' "$CONFIG" >&2
+        exit 2
+    fi
+
+    required_apps=$(yq -r ".apps[$selected_app_idx].requires[]? // empty" "$CONFIG")
+    while IFS= read -r required_app; do
+        [[ -n "$required_app" ]] || continue
+        if ! app_is_selected "$required_app"; then
+            echo "App '$selected_app' requires '$required_app'; include both app names." >&2
+            exit 2
+        fi
+    done <<< "$required_apps"
+done
+
+setup_ssh_for_root
+
+if [[ ${#SELECTED_APPS[@]} -gt 0 ]]; then
+    echo "=== Bootstrapping ${SELECTED_APPS[*]} from $CONFIG ==="
+else
+    echo "=== Bootstrapping all apps from $CONFIG ==="
+fi
+
+echo "Found $app_count app(s) in config"
 echo ""
 
 # ============================================================================
@@ -207,6 +261,11 @@ fi
 # ============================================================================
 for ((app_idx=0; app_idx<app_count; app_idx++)); do
     name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
+
+    if ! app_is_selected "$name"; then
+        continue
+    fi
+
     repo=$(yq -r ".apps[$app_idx].repo" "$CONFIG")
     branch=$(yq -r ".apps[$app_idx].branch // empty" "$CONFIG")
     path=$(yq -r ".apps[$app_idx].path" "$CONFIG")
@@ -214,6 +273,8 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     exec=$(yq -r ".apps[$app_idx].exec" "$CONFIG")
     service_user=$(yq -r ".apps[$app_idx].user // \"dietpi\"" "$CONFIG")
     after=$(yq -r ".apps[$app_idx].after // \"network.target\"" "$CONFIG")
+    service_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
+    service_address_interface=$(yq -r ".apps[$app_idx].service_address.interface // \"auto\"" "$CONFIG")
 
     echo "--- App: $name ---"
     echo "Repo:   $repo"
@@ -366,6 +427,33 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     # --------------------------------------------------------------------------
     echo "Creating systemd service for $name..."
 
+    address_unit=""
+    if [[ -n "$service_address" ]]; then
+        address_service="${name}-address.service"
+        address_helper="/usr/local/sbin/service-address"
+
+        echo "Creating service address unit for $name ($service_address)..."
+        install -m 755 "$SCRIPT_DIR/scripts/service-address.sh" "$address_helper"
+
+        cat > "/etc/systemd/system/$address_service" <<EOF
+[Unit]
+Description=$name service address
+Wants=network-online.target
+After=network-online.target
+PartOf=$name.service
+Before=$name.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$address_helper start $service_address $service_address_interface
+ExecStop=$address_helper stop $service_address $service_address_interface
+EOF
+        chmod 644 "/etc/systemd/system/$address_service"
+        address_unit="Requires=$address_service
+After=$address_service"
+    fi
+
     env_lines=""
     env_count=$(yq -r ".apps[$app_idx].environment | length" "$CONFIG" 2>/dev/null || echo "0")
     if [[ "$env_count" -gt 0 ]]; then
@@ -386,6 +474,7 @@ EnvironmentFile=/etc/${name}.env"
 [Unit]
 Description=$name service
 After=$after
+$address_unit
 
 [Service]
 Type=simple
@@ -401,6 +490,11 @@ EOF
 
     chmod 644 "/etc/systemd/system/${name}.service"
     systemctl daemon-reload
+    if [[ -n "$service_address" ]]; then
+        # The address belongs to the application lifecycle and must not start
+        # independently at boot.
+        systemctl disable "$address_service" 2>/dev/null || true
+    fi
     systemctl enable "${name}.service"
     systemctl restart "${name}.service"
     echo "Service $name started."
@@ -411,15 +505,18 @@ done
 # CONFIGURE SYSTEM (shared, run once)
 # ============================================================================
 
-# Configure mosquitto to listen on all interfaces
-echo "Configuring mosquitto for network access..."
-mkdir -p /etc/mosquitto/conf.d
-cat > /etc/mosquitto/conf.d/network.conf <<'MQTT_EOF'
+# Configure mosquitto only when provisioning an app that uses it. This keeps
+# selected deployments self-contained on fresh hosts.
+if app_is_selected lexacube || app_is_selected nfc-control; then
+    echo "Configuring mosquitto for network access..."
+    mkdir -p /etc/mosquitto/conf.d
+    cat > /etc/mosquitto/conf.d/network.conf <<'MQTT_EOF'
 listener 1883 0.0.0.0
 allow_anonymous true
 persistence false
 MQTT_EOF
-systemctl restart mosquitto
+    systemctl restart mosquitto
+fi
 
 echo "Configuring ALSA..."
 cat > /etc/asound.conf <<'ALSA_EOF'
@@ -471,8 +568,6 @@ usermod -a -G audio,dialout,gpio dietpi || true
 
 # Install Claude backend switch scripts for root and dietpi users
 echo "Installing Claude backend switch scripts..."
-
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
     for USER_HOME in /root /home/dietpi; do
