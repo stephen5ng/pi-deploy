@@ -62,7 +62,7 @@ case "$action" in
                 else
                     echo "arping failed with status $arping_status (link not ready?); retrying in 2 seconds..." >&2
                     sleep 2
-                    ((retry_count++))
+                    ((++retry_count))
                 fi
             done
 

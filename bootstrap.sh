@@ -3,6 +3,7 @@ set -euo pipefail
 
 CONFIG="apps.yaml"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+SELECTED_APP=${1:-}
 
 # Clone or update a git repository
 git_clone_or_update() {
@@ -133,10 +134,14 @@ migrate_service_address_to_dhcp() {
     echo "If SSH disconnects, reconnect using the Pi's DHCP address or hostname."
 }
 
-echo "=== Bootstrapping from $CONFIG ==="
+if [[ -n "$SELECTED_APP" ]]; then
+    echo "=== Bootstrapping $SELECTED_APP from $CONFIG ==="
+else
+    echo "=== Bootstrapping all apps from $CONFIG ==="
+fi
 
 app_count=$(yq -r '.apps | length' "$CONFIG")
-echo "Found $app_count app(s) to deploy"
+echo "Found $app_count app(s) in config"
 echo ""
 
 # ============================================================================
@@ -175,6 +180,11 @@ fi
 # ============================================================================
 for ((app_idx=0; app_idx<app_count; app_idx++)); do
     name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
+    
+    if [[ -n "$SELECTED_APP" && "$name" != "$SELECTED_APP" ]]; then
+        continue
+    fi
+
     repo=$(yq -r ".apps[$app_idx].repo" "$CONFIG")
     branch=$(yq -r ".apps[$app_idx].branch // empty" "$CONFIG")
     path=$(yq -r ".apps[$app_idx].path" "$CONFIG")
@@ -531,6 +541,11 @@ echo "Cleaning up obsolete service units..."
 expected_address_services=""
 for ((app_idx=0; app_idx<app_count; app_idx++)); do
     app_name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
+    
+    if [[ -n "$SELECTED_APP" && "$app_name" != "$SELECTED_APP" ]]; then
+        continue
+    fi
+    
     has_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
     if [[ -n "$has_address" ]]; then
         expected_address_services+=" ${app_name}-address.service "
@@ -539,6 +554,11 @@ done
 
 for existing_svc_path in /etc/systemd/system/*-address.service; do
     [[ -f "$existing_svc_path" ]] || continue
+    
+    if ! grep -q "/usr/local/sbin/service-address" "$existing_svc_path"; then
+        continue
+    fi
+
     svc_name=$(basename "$existing_svc_path")
     if [[ "$expected_address_services" != *" $svc_name "* ]]; then
         echo "Removing obsolete service address unit: $svc_name"
@@ -552,6 +572,11 @@ systemctl daemon-reload
 # complete. The live interface change runs as a detached systemd job.
 for ((app_idx=0; app_idx<app_count; app_idx++)); do
     name=$(yq -r ".apps[$app_idx].name" "$CONFIG")
+    
+    if [[ -n "$SELECTED_APP" && "$name" != "$SELECTED_APP" ]]; then
+        continue
+    fi
+    
     service_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
     if [[ -n "$service_address" ]]; then
         migrate_service_address_to_dhcp "$name" "$service_address"
