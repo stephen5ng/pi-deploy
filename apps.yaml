@@ -12,6 +12,8 @@ apps:
       interface: auto
     environment:
       - LED_DISPLAY_TYPE=mini
+      - LEXACUBE_ADMIN_HOST=0.0.0.0
+      - LEXACUBE_ADMIN_PORT=8080
     apt_packages:
       - python3-dev
       - python3-pillow
@@ -29,6 +31,13 @@ apps:
       - repo: "https://github.com/hzeller/rpi-rgb-led-matrix"
         path: /opt/rpi-rgb-led-matrix
         install_python_cmd: "pip install scikit-build-core cython && pip install {path}"
+      - repo: "https://github.com/stephen5ng/cube-pn5180"
+        path: /opt/cube-pn5180
+        submodules: true
+        secret_file:
+          source: /etc/lexacube-firmware-secrets.h
+          destination: src/secrets.h
+        install_python_cmd: "pip install platformio"
 
   - name: nfc-control
     repo: "https://github.com/stephen5ng/nfc-control"

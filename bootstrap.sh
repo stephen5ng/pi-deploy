@@ -302,9 +302,36 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
             dep_repo=$(yq -r ".apps[$app_idx].dependencies[$i].repo" "$CONFIG")
             dep_path=$(yq -r ".apps[$app_idx].dependencies[$i].path" "$CONFIG")
             dep_build=$(yq -r ".apps[$app_idx].dependencies[$i].build_cmd // empty" "$CONFIG")
+            dep_submodules=$(yq -r ".apps[$app_idx].dependencies[$i].submodules // false" "$CONFIG")
+            dep_secret_source=$(yq -r ".apps[$app_idx].dependencies[$i].secret_file.source // empty" "$CONFIG")
+            dep_secret_destination=$(yq -r ".apps[$app_idx].dependencies[$i].secret_file.destination // empty" "$CONFIG")
 
             echo "  Dependency: $dep_repo -> $dep_path"
             git_clone_or_update "$dep_repo" "$dep_path"
+
+            if [[ "$dep_submodules" == "true" ]]; then
+                echo "    Initializing recursive submodules..."
+                git -C "$dep_path" submodule sync --recursive
+                git -C "$dep_path" submodule update --init --recursive
+            fi
+
+            if [[ -n "$dep_secret_source" || -n "$dep_secret_destination" ]]; then
+                if [[ -z "$dep_secret_source" || -z "$dep_secret_destination" ]]; then
+                    echo "Both secret_file.source and secret_file.destination are required for $dep_repo" >&2
+                    exit 1
+                fi
+                if [[ "$dep_secret_destination" == /* || "$dep_secret_destination" == *".."* ]]; then
+                    echo "Secret destination must be a relative path without '..': $dep_secret_destination" >&2
+                    exit 1
+                fi
+                if [[ ! -f "$dep_secret_source" ]]; then
+                    echo "Required firmware secrets file not found: $dep_secret_source" >&2
+                    echo "Create it from $SCRIPT_DIR/lexacube-firmware-secrets.h.example, then rerun bootstrap." >&2
+                    exit 1
+                fi
+                echo "    Installing protected firmware secrets..."
+                install -D -m 600 "$dep_secret_source" "$dep_path/$dep_secret_destination"
+            fi
 
             if [[ -n "$dep_build" ]]; then
                 echo "    Building: ${dep_build//\{path\}/$dep_path}"
