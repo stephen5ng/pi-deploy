@@ -71,3 +71,30 @@ The WiFi values are consumed by DietPi into its root-only WiFi database.
 `bootstrap.sh` uses that local database to generate the ignored ESP32 firmware
 header. Neither `provisioning.env` nor populated firmware credentials are
 committed to Git.
+
+## knockstrip service secrets
+
+`bootstrap.sh` wires `EnvironmentFile=/etc/knockstrip.env` into the knockstrip
+unit but does not populate it — the secret values are provisioned separately so
+they never touch the SD card. After the Pi is up, from the laptop:
+
+```sh
+# Fill in the knockstrip secrets in provisioning.env first (see the example),
+# then push them to /etc/knockstrip.env (mode 0600) over ssh:
+python3 scripts/provision_knockstrip_env.py            # or --pi user@host
+python3 scripts/provision_knockstrip_env.py --dry-run  # preview, no write
+```
+
+It sets `POSTHOG_API_KEY`, `CLUE_STATUS_API_KEY`, and `PUSHER_SECRET` (skipping
+any left blank), then reminds you to gate and restart:
+
+```sh
+ssh <pi> sudo systemctl start knockstrip-preflight.service
+ssh <pi> sudo systemctl restart knockstrip.service
+```
+
+The `POSTHOG_API_KEY` is PostHog's public project ingest key; the script fetches
+it from the PostHog API using the `phx_` personal key, which stays on the laptop.
+The values are idempotent and never printed (only masked confirmations), so the
+step is safe to re-run on a key rotation. It is the same command for a re-image
+and for a one-off rotation.
