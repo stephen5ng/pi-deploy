@@ -3,5 +3,6 @@ scripts/*-key
 *.key
 
 provisioning.env
+rendered/
 __pycache__/
 *.py[cod]
