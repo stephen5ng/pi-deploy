@@ -7,6 +7,7 @@ import argparse
 import os
 import re
 import shlex
+import string
 from pathlib import Path
 from typing import Iterable
 
@@ -76,7 +77,24 @@ def c_string(value: str) -> str:
     )
 
 
+def validate_wifi_credentials(ssid: str, key: str) -> None:
+    if len(ssid.encode("utf-8")) > 32:
+        raise ValueError("WiFi SSID exceeds the ESP32 limit of 32 bytes")
+
+    if not key:
+        return
+    if len(key) == 64:
+        if any(character not in string.hexdigits for character in key):
+            raise ValueError("a 64-character WiFi key must be a hexadecimal WPA PSK")
+        return
+    if not 8 <= len(key) <= 63:
+        raise ValueError("WiFi passphrase must contain 8-63 characters")
+    if any(not 32 <= ord(character) <= 126 for character in key):
+        raise ValueError("WiFi passphrase must contain printable ASCII characters")
+
+
 def render_header(ssid: str, key: str) -> str:
+    validate_wifi_credentials(ssid, key)
     escaped_ssid = c_string(ssid)
     escaped_key = c_string(key)
     return f"""\

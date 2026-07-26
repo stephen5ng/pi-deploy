@@ -71,6 +71,17 @@ class FirmwareSecretsTests(unittest.TestCase):
             self.assertFalse(created)
             self.assertEqual(output.read_text(encoding="utf-8"), "custom\n")
 
+    def test_accepts_64_character_hexadecimal_wpa_psk(self):
+        psk = "0123456789abcdef" * 4
+
+        content = firmware_secrets.render_header("LEXACUBE", psk)
+
+        self.assertIn(f'#define WIFI_PASSWORD "{psk}"', content)
+
+    def test_rejects_non_hexadecimal_64_character_key(self):
+        with self.assertRaisesRegex(ValueError, "hexadecimal WPA PSK"):
+            firmware_secrets.render_header("LEXACUBE", "z" * 64)
+
 
 if __name__ == "__main__":
     unittest.main()
