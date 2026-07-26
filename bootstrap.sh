@@ -1,9 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 
-CONFIG="apps.yaml"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CONFIG="$SCRIPT_DIR/apps.yaml"
 SELECTED_APPS=("$@")
+
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+    echo "bootstrap.sh must run as root." >&2
+    exit 1
+fi
+
+if ! command -v yq &> /dev/null; then
+    echo "Installing bootstrap prerequisites..."
+    apt-get update
+    apt-get install -y --no-install-recommends yq
+fi
 
 app_is_selected() {
     local candidate=$1

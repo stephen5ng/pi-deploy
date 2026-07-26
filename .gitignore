@@ -1,3 +1,7 @@
 # Claude API keys (never commit these)
 scripts/*-key
 *.key
+
+provisioning.env
+__pycache__/
+*.py[cod]
