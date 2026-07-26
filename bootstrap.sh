@@ -305,6 +305,7 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
             dep_submodules=$(yq -r ".apps[$app_idx].dependencies[$i].submodules // false" "$CONFIG")
             dep_secret_source=$(yq -r ".apps[$app_idx].dependencies[$i].secret_file.source // empty" "$CONFIG")
             dep_secret_destination=$(yq -r ".apps[$app_idx].dependencies[$i].secret_file.destination // empty" "$CONFIG")
+            dep_secret_generator=$(yq -r ".apps[$app_idx].dependencies[$i].secret_file.generate // empty" "$CONFIG")
 
             echo "  Dependency: $dep_repo -> $dep_path"
             git_clone_or_update "$dep_repo" "$dep_path"
@@ -323,6 +324,16 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
                 if [[ "$dep_secret_destination" == /* || "$dep_secret_destination" == *".."* ]]; then
                     echo "Secret destination must be a relative path without '..': $dep_secret_destination" >&2
                     exit 1
+                fi
+                if [[ ! -f "$dep_secret_source" ]]; then
+                    if [[ "$dep_secret_generator" == "dietpi_wifi" ]]; then
+                        echo "    Generating firmware secrets from the DietPi WiFi profile..."
+                        python3 "$SCRIPT_DIR/scripts/firmware_secrets_from_dietpi_wifi.py" \
+                            --output "$dep_secret_source"
+                    elif [[ -n "$dep_secret_generator" ]]; then
+                        echo "Unknown secret file generator '$dep_secret_generator' for $dep_repo" >&2
+                        exit 1
+                    fi
                 fi
                 if [[ ! -f "$dep_secret_source" ]]; then
                     echo "Required firmware secrets file not found: $dep_secret_source" >&2
