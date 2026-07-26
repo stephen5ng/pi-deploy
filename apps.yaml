@@ -33,6 +33,10 @@ apps:
         install_python_cmd: "pip install scikit-build-core cython && pip install {path}"
       - repo: "https://github.com/stephen5ng/cube-pn5180"
         path: /opt/cube-pn5180
+        submodules: true
+        secret_file:
+          source: /etc/lexacube-firmware-secrets.h
+          destination: src/secrets.h
         install_python_cmd: "pip install platformio"
 
   - name: nfc-control
