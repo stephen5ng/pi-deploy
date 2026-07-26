@@ -104,6 +104,38 @@ class RenderDietPiProvisioningTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "two-letter"):
             provisioning.validate(values)
 
+    def test_accepts_64_character_hexadecimal_wpa_psk(self):
+        values = {
+            "WIFI_SSID": "LEXACUBE",
+            "WIFI_PASSWORD": "0123456789abcdef" * 4,
+            "WIFI_COUNTRY": "US",
+            "DIETPI_PASSWORD": "temporary-password",
+        }
+
+        provisioning.validate(values)
+
+    def test_rejects_short_wpa_passphrase(self):
+        values = {
+            "WIFI_SSID": "LEXACUBE",
+            "WIFI_PASSWORD": "short",
+            "WIFI_COUNTRY": "US",
+            "DIETPI_PASSWORD": "temporary-password",
+        }
+
+        with self.assertRaisesRegex(ValueError, "8-63 characters"):
+            provisioning.validate(values)
+
+    def test_rejects_non_hexadecimal_64_character_key(self):
+        values = {
+            "WIFI_SSID": "LEXACUBE",
+            "WIFI_PASSWORD": "z" * 64,
+            "WIFI_COUNTRY": "US",
+            "DIETPI_PASSWORD": "temporary-password",
+        }
+
+        with self.assertRaisesRegex(ValueError, "hexadecimal WPA PSK"):
+            provisioning.validate(values)
+
 
 if __name__ == "__main__":
     unittest.main()

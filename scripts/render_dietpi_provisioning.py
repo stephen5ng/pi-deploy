@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import stat
+import string
 from pathlib import Path
 
 
@@ -61,16 +62,25 @@ def shell_single_quote(value: str) -> str:
 
 def validate(values: dict[str, str]) -> None:
     ssid = required(values, "WIFI_SSID")
-    required(values, "WIFI_PASSWORD")
+    wifi_password = required(values, "WIFI_PASSWORD")
     country = required(values, "WIFI_COUNTRY")
     password = required(values, "DIETPI_PASSWORD")
 
-    if values["WIFI_PASSWORD"] == "replace-me":
+    if wifi_password == "replace-me":
         raise ValueError("WIFI_PASSWORD still contains the example placeholder")
     if password == "replace-with-a-unique-password":
         raise ValueError("DIETPI_PASSWORD still contains the example placeholder")
     if len(ssid.encode("utf-8")) > 32:
         raise ValueError("WIFI_SSID exceeds 32 bytes")
+    if len(wifi_password) == 64:
+        if any(character not in string.hexdigits for character in wifi_password):
+            raise ValueError(
+                "a 64-character WIFI_PASSWORD must be a hexadecimal WPA PSK"
+            )
+    elif not 8 <= len(wifi_password) <= 63:
+        raise ValueError("WIFI_PASSWORD must contain 8-63 characters")
+    elif any(not 32 <= ord(character) <= 126 for character in wifi_password):
+        raise ValueError("WIFI_PASSWORD must contain printable ASCII characters")
     if not re.fullmatch(r"[A-Z]{2}", country):
         raise ValueError("WIFI_COUNTRY must be a two-letter uppercase country code")
     if not 8 <= len(password.encode("utf-8")) <= 100:
