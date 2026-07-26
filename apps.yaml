@@ -37,6 +37,7 @@ apps:
         secret_file:
           source: /etc/lexacube-firmware-secrets.h
           destination: src/secrets.h
+          generate: dietpi_wifi
         install_python_cmd: "pip install platformio"
 
   - name: nfc-control
