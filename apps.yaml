@@ -7,6 +7,13 @@ apps:
     exec: /opt/lexacube/cube_env/bin/python3 /opt/lexacube/runpygame.py --mode classic
     user: root  # Required for rpi-rgb-led-matrix GPIO access
     after: "network.target"
+    # Only one member of an exclusive_group may run at a time. The two games
+    # drive different LED hardware (matrix here, strip for knockstrip) so they
+    # do not contend there, but they share one audio output and one 4GB Pi.
+    # default_in_group applies only on a fresh flash where no member is enabled
+    # yet -- bootstrap otherwise preserves whichever member is already active.
+    exclusive_group: game
+    default_in_group: true
     service_address:
       address: 192.168.8.247/24
       interface: auto
@@ -48,16 +55,23 @@ apps:
     after: "network.target mosquitto.service"
     requires:
       - lexacube
+    # Reuses lexacube's venv and only talks to lexacube over MQTT, so it has
+    # nothing to do while a different game is active. bound_to makes it start
+    # and stop with lexacube rather than at boot.
+    bound_to: lexacube
 
   - name: knockstrip
     repo: "https://github.com/stephen5ng/knockstrip"
     path: /home/dietpi/knockstrip
-    exec: /home/dietpi/knockstrip/.venv/bin/python -m knockstrip.cli --hardware
-    user: root
-    after: "network.target sound.target"
-    environment:
-      - PYTHONPATH=/home/dietpi/knockstrip/game/src
-      - SUDO_UID=1000
-      - SUDO_GID=1000
+    exclusive_group: game
+    # The knockstrip repo owns its unit file: it carries ExecStartPre steps (the
+    # grant outbox directory, the compiled song build), the pursuit Environment
+    # settings and Restart=always, and game/tests/test_deployment.py enforces
+    # that it stays byte-identical to the preflight sibling on every execution
+    # directive. Generating a unit from exec/environment keys here would be a
+    # lossy copy that silently drifts, so bootstrap installs the repo's instead.
+    unit_source: ops/knockstrip.service
+    extra_units:
+      - ops/knockstrip-preflight.service
     apt_packages:
       - libportaudio2

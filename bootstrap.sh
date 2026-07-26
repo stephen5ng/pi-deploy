@@ -281,16 +281,24 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     branch=$(yq -r ".apps[$app_idx].branch // empty" "$CONFIG")
     path=$(yq -r ".apps[$app_idx].path" "$CONFIG")
     venv_name=$(yq -r ".apps[$app_idx].venv // empty" "$CONFIG")
-    exec=$(yq -r ".apps[$app_idx].exec" "$CONFIG")
+    exec=$(yq -r ".apps[$app_idx].exec // empty" "$CONFIG")
     service_user=$(yq -r ".apps[$app_idx].user // \"dietpi\"" "$CONFIG")
     after=$(yq -r ".apps[$app_idx].after // \"network.target\"" "$CONFIG")
     service_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
     service_address_interface=$(yq -r ".apps[$app_idx].service_address.interface // \"auto\"" "$CONFIG")
+    exclusive_group=$(yq -r ".apps[$app_idx].exclusive_group // empty" "$CONFIG")
+    bound_to=$(yq -r ".apps[$app_idx].bound_to // empty" "$CONFIG")
+    unit_source=$(yq -r ".apps[$app_idx].unit_source // empty" "$CONFIG")
 
     echo "--- App: $name ---"
     echo "Repo:   $repo"
     echo "Path:   $path"
-    echo "Exec:   $exec"
+    if [[ -n "$unit_source" ]]; then
+        echo "Unit:   $unit_source (owned by app repo)"
+    else
+        echo "Exec:   $exec"
+    fi
+    [[ -n "$exclusive_group" ]] && echo "Group:  $exclusive_group (exclusive)"
     echo ""
 
     # --------------------------------------------------------------------------
@@ -519,11 +527,56 @@ Environment=${env_var}"
 EnvironmentFile=/etc/${name}.env"
     fi
 
-    cat > "/etc/systemd/system/${name}.service" <<EOF
+    if [[ -n "$unit_source" ]]; then
+        # The app repo owns this unit; install it verbatim rather than
+        # generating a lossy copy from apps.yaml keys.
+        if [[ "$unit_source" == /* || "$unit_source" == *".."* ]]; then
+            echo "unit_source must be a relative path without '..': $unit_source" >&2
+            exit 1
+        fi
+        if [[ ! -f "$path/$unit_source" ]]; then
+            echo "Declared unit_source not found: $path/$unit_source" >&2
+            exit 1
+        fi
+        echo "Installing unit from app repo: $unit_source"
+        install -m 644 "$path/$unit_source" "/etc/systemd/system/${name}.service"
+
+        extra_unit_count=$(yq -r ".apps[$app_idx].extra_units | length" "$CONFIG" 2>/dev/null || echo "0")
+        for ((i=0; i<extra_unit_count; i++)); do
+            extra_unit=$(yq -r ".apps[$app_idx].extra_units[$i]" "$CONFIG")
+            if [[ "$extra_unit" == /* || "$extra_unit" == *".."* ]]; then
+                echo "extra_units entries must be relative paths without '..': $extra_unit" >&2
+                exit 1
+            fi
+            if [[ ! -f "$path/$extra_unit" ]]; then
+                echo "Declared extra unit not found: $path/$extra_unit" >&2
+                exit 1
+            fi
+            echo "  Installing sibling unit: $(basename "$extra_unit")"
+            install -m 644 "$path/$extra_unit" "/etc/systemd/system/$(basename "$extra_unit")"
+        done
+    else
+        if [[ -z "$exec" ]]; then
+            echo "App $name needs either an 'exec' or a 'unit_source'." >&2
+            exit 1
+        fi
+
+        bound_unit=""
+        install_target="multi-user.target"
+        if [[ -n "$bound_to" ]]; then
+            # Follow the app we are bound to: start with it (via its .wants
+            # directory), and stop/restart with it (via PartOf).
+            bound_unit="PartOf=${bound_to}.service
+After=${bound_to}.service"
+            install_target="${bound_to}.service"
+        fi
+
+        cat > "/etc/systemd/system/${name}.service" <<EOF
 [Unit]
 Description=$name service
 After=$after
 $address_unit
+$bound_unit
 
 [Service]
 Type=simple
@@ -534,21 +587,112 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=$install_target
 EOF
+        chmod 644 "/etc/systemd/system/${name}.service"
+    fi
 
-    chmod 644 "/etc/systemd/system/${name}.service"
+    # Exclusivity is applied as a drop-in so it composes with repo-owned units.
+    dropin_dir="/etc/systemd/system/${name}.service.d"
+    if [[ -n "$exclusive_group" ]]; then
+        conflicts=$(yq -r ".apps[] | select(.exclusive_group == \"$exclusive_group\") | select(.name != \"$name\") | .name + \".service\"" "$CONFIG" | paste -sd' ')
+        mkdir -p "$dropin_dir"
+        cat > "$dropin_dir/10-exclusive.conf" <<EOF
+# Managed by pi-deploy bootstrap. Members of the '$exclusive_group' group are
+# mutually exclusive: starting this unit stops the others, so a manual
+# 'systemctl start' can never leave two games contending for audio and RAM.
+[Unit]
+Conflicts=$conflicts
+EOF
+        chmod 644 "$dropin_dir/10-exclusive.conf"
+    else
+        rm -f "$dropin_dir/10-exclusive.conf" 2>/dev/null || true
+        rmdir "$dropin_dir" 2>/dev/null || true
+    fi
+
     systemctl daemon-reload
     if [[ -n "$service_address" ]]; then
         # The address belongs to the application lifecycle and must not start
         # independently at boot.
         systemctl disable "$address_service" 2>/dev/null || true
     fi
-    systemctl enable "${name}.service"
-    systemctl restart "${name}.service"
-    echo "Service $name started."
+
+    if [[ -n "$bound_to" ]]; then
+        # reenable, not enable: the [Install] target moved from multi-user.target
+        # to the bound unit, and enable alone would leave the stale symlink.
+        systemctl reenable "${name}.service" 2>/dev/null || true
+        echo "Service $name installed; follows ${bound_to}.service."
+    elif [[ -n "$exclusive_group" ]]; then
+        # Activation is decided after every app is installed, so that the whole
+        # group is known before anything is started or stopped.
+        echo "Service $name installed; activation deferred to group '$exclusive_group'."
+    else
+        systemctl enable "${name}.service"
+        systemctl restart "${name}.service"
+        echo "Service $name started."
+    fi
     echo ""
 done
+
+# ============================================================================
+# ACTIVATE EXCLUSIVE GROUPS
+# Every group member is installed above; exactly one may run. The existing
+# systemd enable-state is the source of truth, so re-running bootstrap never
+# changes which game is live. default_in_group only breaks the tie on a fresh
+# flash where no member has been enabled yet.
+# ============================================================================
+groups=$(yq -r '.apps[].exclusive_group // empty' "$CONFIG" | sort -u)
+for group in $groups; do
+    members=$(yq -r ".apps[] | select(.exclusive_group == \"$group\") | .name" "$CONFIG")
+
+    # Only arbitrate a group whose members were all installed this run.
+    skip_group=false
+    for member in $members; do
+        app_is_selected "$member" || skip_group=true
+    done
+    if [[ "$skip_group" == "true" ]]; then
+        echo "Group '$group' not fully selected this run; leaving activation untouched."
+        continue
+    fi
+
+    active=""
+    for member in $members; do
+        if systemctl is-enabled "${member}.service" &>/dev/null; then
+            active="$member"
+            break
+        fi
+    done
+
+    if [[ -z "$active" ]]; then
+        active=$(yq -r ".apps[] | select(.exclusive_group == \"$group\") | select(.default_in_group == true) | .name" "$CONFIG" | head -1)
+        if [[ -z "$active" ]]; then
+            echo "Group '$group' has no enabled member and no default_in_group; leaving all stopped." >&2
+            continue
+        fi
+        echo "Group '$group': no member enabled, falling back to default '$active'."
+    else
+        echo "Group '$group': preserving active member '$active'."
+    fi
+
+    # Stop the losers first so the winner never briefly contends with them.
+    for member in $members; do
+        if [[ "$member" != "$active" ]]; then
+            systemctl disable "${member}.service" 2>/dev/null || true
+            systemctl stop "${member}.service" 2>/dev/null || true
+        fi
+    done
+    systemctl enable "${active}.service"
+    systemctl restart "${active}.service"
+    echo "Group '$group': $active running, others stopped and disabled."
+    echo ""
+done
+
+if [[ -n "$groups" && -f "$SCRIPT_DIR/scripts/select-app.sh" ]]; then
+    sed "s|@CONFIG@|$CONFIG|" "$SCRIPT_DIR/scripts/select-app.sh" > /usr/local/sbin/pi-game
+    chmod 755 /usr/local/sbin/pi-game
+    echo "Installed /usr/local/sbin/pi-game (run 'pi-game' to see or switch the active app)."
+    echo ""
+fi
 
 # ============================================================================
 # CONFIGURE SYSTEM (shared, run once)
