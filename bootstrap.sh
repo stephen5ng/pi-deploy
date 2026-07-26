@@ -464,6 +464,20 @@ Environment=${env_var}"
         done
     fi
 
+    # The admin page controls root-level game maintenance. Generate its
+    # password once and preserve it across subsequent idempotent bootstraps.
+    if [[ "$name" == "lexacube" ]]; then
+        touch /etc/lexacube.env
+        chmod 600 /etc/lexacube.env
+        if ! grep -q '^LEXACUBE_ADMIN_TOKEN=' /etc/lexacube.env; then
+            admin_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')
+            echo "LEXACUBE_ADMIN_TOKEN=$admin_token" >> /etc/lexacube.env
+            echo "LEXACUBE admin page: http://$(hostname -I | awk '{print $1}'):8080"
+            echo "LEXACUBE admin user: admin"
+            echo "LEXACUBE admin password: $admin_token"
+        fi
+    fi
+
     env_file_line=""
     if [[ -f "/etc/${name}.env" ]]; then
         env_file_line="
