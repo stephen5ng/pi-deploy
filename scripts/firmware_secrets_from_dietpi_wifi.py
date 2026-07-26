@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import string
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -110,22 +111,35 @@ def render_header(ssid: str, key: str) -> str:
 
 
 def create_header(output: Path, content: str) -> bool:
-    """Create output mode 0600 without replacing an existing override."""
-    try:
-        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return False
+    """Atomically create output mode 0600 without replacing an override."""
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", dir=output.parent
+    )
+    temporary = Path(temporary_name)
 
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file:
+        os.fchmod(descriptor, 0o600)
+        file = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
+        descriptor = -1
+        with file:
             file.write(content)
             file.flush()
             os.fsync(file.fileno())
-    except BaseException:
-        output.unlink(missing_ok=True)
-        raise
 
-    os.chmod(output, 0o600)
+        try:
+            os.link(temporary, output)
+        except FileExistsError:
+            return False
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+    directory = os.open(output.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     return True
 
 

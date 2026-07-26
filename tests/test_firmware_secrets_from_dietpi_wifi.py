@@ -3,6 +3,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_PATH = (
@@ -70,6 +71,20 @@ class FirmwareSecretsTests(unittest.TestCase):
 
             self.assertFalse(created)
             self.assertEqual(output.read_text(encoding="utf-8"), "custom\n")
+
+    def test_interrupted_write_does_not_leave_partial_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "secrets.h"
+
+            with mock.patch.object(
+                firmware_secrets.os, "fsync", side_effect=OSError("interrupted")
+            ):
+                with self.assertRaisesRegex(OSError, "interrupted"):
+                    firmware_secrets.create_header(output, "generated\n")
+
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".secrets.h.*")), [])
 
     def test_accepts_64_character_hexadecimal_wpa_psk(self):
         psk = "0123456789abcdef" * 4
