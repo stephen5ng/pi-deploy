@@ -13,16 +13,43 @@ chmod 600 provisioning.env
 ```
 
 Set the WiFi network, a unique DietPi password, and optionally an SSH public key.
-Render the files that belong on the DietPi boot partition:
+Install Raspberry Pi Imager if needed:
 
 ```sh
-python3 scripts/render_dietpi_provisioning.py \
-  --env provisioning.env \
-  --dietpi-template dietpi.template.txt \
-  --wifi-template dietpi-wifi.template.txt \
-  --output-directory rendered
-cp rendered/dietpi.txt rendered/dietpi-wifi.txt /Volumes/boot/
-cp scripts/Automation_Custom_Script.sh /Volumes/boot/
+brew install --cask raspberry-pi-imager
+```
+
+Insert the SD card and identify its whole-disk device:
+
+```sh
+diskutil list external
+```
+
+Preview the operation without downloading or writing an image:
+
+```sh
+./scripts/prepare_dietpi_sd.sh --device /dev/disk4 --dry-run
+```
+
+Then prepare the card:
+
+```sh
+./scripts/prepare_dietpi_sd.sh --device /dev/disk4
+```
+
+The script accepts only a whole external/removable macOS disk, refuses
+`/dev/disk0` and internal disks, verifies DietPi's published SHA-256 checksum,
+and requires the exact confirmation `ERASE /dev/diskN`. It uses Raspberry Pi
+Imager's CLI to flash the compressed image, writes only the minimal first-boot
+files, then ejects the card.
+
+The default image is DietPi Trixie ARMv8 for Raspberry Pi 2/3/4. For another
+supported model, pass its official image URL:
+
+```sh
+./scripts/prepare_dietpi_sd.sh \
+  --device /dev/disk4 \
+  --image-url https://dietpi.com/downloads/images/DietPi_RPi5-ARMv8-Trixie.img.xz
 ```
 
 On first boot, DietPi joins WiFi and runs `Automation_Custom_Script.sh`. The
