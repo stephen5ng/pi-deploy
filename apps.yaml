@@ -46,6 +46,11 @@ apps:
           destination: src/secrets.h
           generate: dietpi_wifi
         install_python_cmd: "pip install platformio"
+        # Pre-fetch the ESP32 platform, Xtensa toolchain and lib_deps declared in
+        # the firmware's platformio.ini, so a freshly bootstrapped Pi can build
+        # firmware offline instead of downloading ~1GB on someone's first
+        # `pio run`. Idempotent: already-installed packages are skipped.
+        toolchain_cmd: "pio pkg install -d {path}"
 
   - name: nfc-control
     repo: "https://github.com/stephen5ng/nfc-control"
