@@ -421,10 +421,21 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
         for ((i=0; i<dep_count; i++)); do
             dep_path=$(yq -r ".apps[$app_idx].dependencies[$i].path" "$CONFIG")
             dep_python_cmd=$(yq -r ".apps[$app_idx].dependencies[$i].install_python_cmd // empty" "$CONFIG")
+            dep_toolchain_cmd=$(yq -r ".apps[$app_idx].dependencies[$i].toolchain_cmd // empty" "$CONFIG")
 
             if [[ -n "$dep_python_cmd" ]]; then
                 echo "  Installing: ${dep_python_cmd//\{path\}/$dep_path}"
                 eval "${dep_python_cmd//\{path\}/$dep_path}"
+            fi
+
+            # Cross-compiler toolchains and embedded SDKs, fetched after
+            # install_python_cmd because the tool that fetches them (e.g.
+            # platformio) is itself installed into the venv above. Kept separate
+            # from build_cmd, which runs before any venv exists. The command is
+            # expected to be idempotent -- a no-op once the toolchain is cached.
+            if [[ -n "$dep_toolchain_cmd" ]]; then
+                echo "  Toolchain: ${dep_toolchain_cmd//\{path\}/$dep_path}"
+                eval "${dep_toolchain_cmd//\{path\}/$dep_path}"
             fi
         done
         [[ -n "$venv_name" && -d "$venv_dir" ]] && deactivate
