@@ -78,5 +78,23 @@ apps:
     unit_source: ops/knockstrip.service
     extra_units:
       - ops/knockstrip-preflight.service
+    # Gitignored in the knockstrip repo because there is no shared "correct"
+    # value -- which also means a reflash loses them and the game will not run.
+    # These are this rig's recorded values, not invented defaults: update them
+    # here when the rig is rewired, so the change survives the next flash.
+    rig_files:
+      - path: station_ids.yaml
+        content: |
+          #station_ids: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20, 22, 23, 24]  # 20 total, physical ascending-ID order
+          station_ids: [3, 4, 6, 8, 12, 13, 24, 20, 22, 23]
+      - path: config.local.yaml
+        content: |
+          # Per-rig overrides for THIS installation. Gitignored and optional; see
+          # config.local.example.yaml. Keeping these here rather than as a local commit to
+          # config.yaml means the deployed checkout stays a clean fast-forward, so
+          # pi-deploy's unattended `git pull` can never hit a merge conflict.
+          hardware:
+            num_stations: 10
+            total_leds: 300            # per-station zone = total_leds/num_stations - station_gap_leds = 30
     apt_packages:
       - libportaudio2

@@ -391,6 +391,75 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     git_clone_or_update "$repo" "$path" "$branch"
 
     # --------------------------------------------------------------------------
+    # Per-rig files
+    # Values that describe THIS installation and are gitignored in the app repo,
+    # so a reflash would otherwise lose them and the app would come up wrong (or,
+    # by design, refuse to start). Recording them here is not the app "guessing" a
+    # default -- it is the deployment repo remembering what is actually wired up.
+    #
+    # Written only when absent. If one exists and differs, say so loudly and leave
+    # it alone: clobbering a map someone is mid-way through tuning on the box is
+    # worse than a warning, and silent drift is what this whole mechanism exists
+    # to prevent.
+    # --------------------------------------------------------------------------
+    # A YAML block scalar already ends in a newline and yq -r appends another, so
+    # render through a command substitution (which strips trailing newlines) and
+    # add exactly one back. Without this every file differs by a blank line and
+    # bootstrap warns forever.
+    rig_content() {
+        printf '%s\n' "$(yq -r ".apps[$1].rig_files[$2].content" "$CONFIG")"
+    }
+
+    rig_file_count=$(yq -r ".apps[$app_idx].rig_files | length" "$CONFIG" 2>/dev/null || echo "0")
+    for ((i=0; i<rig_file_count; i++)); do
+        rig_rel=$(yq -r ".apps[$app_idx].rig_files[$i].path" "$CONFIG")
+        rig_mode=$(yq -r ".apps[$app_idx].rig_files[$i].mode // \"644\"" "$CONFIG")
+
+        if [[ "$rig_rel" == /* || "$rig_rel" == *".."* ]]; then
+            echo "rig_files paths must be relative without '..': $rig_rel" >&2
+            exit 1
+        fi
+        rig_dest="$path/$rig_rel"
+
+        if [[ ! -f "$rig_dest" ]]; then
+            rig_content "$app_idx" "$i" > "$rig_dest"
+            chmod "$rig_mode" "$rig_dest"
+            echo "  Per-rig file created: $rig_dest"
+        elif ! diff -q <(rig_content "$app_idx" "$i") "$rig_dest" >/dev/null; then
+            echo "  WARNING: $rig_dest differs from apps.yaml and was left as-is." >&2
+            echo "           The Pi is the one running; apps.yaml is what survives a" >&2
+            echo "           reflash. Reconcile them:" >&2
+            diff <(rig_content "$app_idx" "$i") "$rig_dest" \
+                | sed 's/^/             /' >&2 || true
+        else
+            echo "  Per-rig file up to date: $rig_dest"
+        fi
+    done
+
+    # --------------------------------------------------------------------------
+    # Secrets from the boot partition
+    # Credentials cannot be defaulted or committed, but they must survive a
+    # reflash. Same route as WiFi: drop <name>.env on the boot partition during
+    # SD prep (see *.env.template.txt) and bootstrap installs it to the
+    # /etc/<name>.env that the generated unit already reads via EnvironmentFile.
+    # Same policy as per-rig files: install when absent, warn rather than clobber.
+    # --------------------------------------------------------------------------
+    for boot_dir in /boot/firmware /boot; do
+        boot_env="$boot_dir/${name}.env"
+        [[ -f "$boot_env" ]] || continue
+        if [[ ! -f "/etc/${name}.env" ]]; then
+            install -m 600 "$boot_env" "/etc/${name}.env"
+            echo "  Secrets installed from $boot_env -> /etc/${name}.env"
+        elif ! diff -q "$boot_env" "/etc/${name}.env" >/dev/null; then
+            # Never diffed to the log: these are credentials.
+            echo "  WARNING: $boot_env differs from /etc/${name}.env; kept the" >&2
+            echo "           installed one. Delete /etc/${name}.env to adopt the" >&2
+            echo "           boot-partition copy." >&2
+        fi
+        break
+    done
+
+    # --------------------------------------------------------------------------
     # Setup Python environment (only if requirements.txt exists)
     # --------------------------------------------------------------------------
     if [[ -f "$path/uv.lock" ]]; then
