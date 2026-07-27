@@ -105,11 +105,28 @@ When modifying application configuration:
 - Uses: Python venv at `/opt/lexacube/cube_env`
 - Output: Written to `/opt/lexacube/output/` (owned by daemon user)
 
+- Member of the `game` exclusive group, and its `default_in_group`
+
 **nfc-control** — NFC admin action daemon
 - Lives in: `/opt/nfc-control`
 - Runs: `/opt/lexacube/cube_env/bin/python3 /opt/nfc-control/nfc_control_daemon.py`
 - Reuses lexacube's venv (aiomqtt already installed there)
 - Requires: `After=mosquitto.service` (configured via `after` field in apps.yaml)
+- `bound_to: lexacube`, so it starts and stops with lexacube instead of at boot
+
+**knockstrip** — LED strip game
+- Lives in: `/home/dietpi/knockstrip`
+- Member of the `game` exclusive group, so it never runs alongside lexacube
+- **Owns its own unit file.** `apps.yaml` points at `ops/knockstrip.service` in
+  the app repo via `unit_source` rather than describing the service with
+  `exec`/`environment` keys. That unit carries `ExecStartPre` steps (grant
+  outbox directory, compiled song build), the pursuit `Environment` settings
+  and `Restart=always`, and `game/tests/test_deployment.py` in that repo
+  enforces that it stays byte-identical to `ops/knockstrip-preflight.service`
+  on every execution directive. Do not reintroduce `exec:` for this app — a
+  generated unit would be a lossy copy that silently drifts.
+- Reads secrets from `/etc/knockstrip.env` (picked up by bootstrap's
+  `/etc/<name>.env` convention)
 
 ### Systemd Service Pattern
 
@@ -128,8 +145,42 @@ already in use by another host. Legacy hosts where the service address is still
 the primary static address must be migrated to DHCP administratively before
 deployment.
 
+### Exclusive App Groups
+
+Every app is always *installed*; whether it *runs* is separate. Apps sharing an
+`exclusive_group` in apps.yaml are mutually exclusive — exactly one member runs
+at a time. This exists because the Pi has one audio output and 4GB of RAM, so
+lexacube and knockstrip must never run together. (They drive different LED
+hardware — matrix and strip — so that is not the conflict.)
+
+Three mechanisms, deliberately layered:
+
+1. **`Conflicts=` drop-in** at `/etc/systemd/system/<name>.service.d/10-exclusive.conf`.
+   Starting one member makes systemd stop the others, so even a manual
+   `systemctl start knockstrip` cannot leave two games running. It is a drop-in
+   rather than a generated directive so it composes with repo-owned units
+   (see knockstrip's `unit_source`).
+2. **Enable-state is the source of truth.** There is no state file to drift.
+   Bootstrap reads `systemctl is-enabled` for each member and *preserves*
+   whichever is already active, so re-running bootstrap never changes which
+   game is live. `default_in_group: true` breaks the tie only on a fresh flash
+   where no member has been enabled yet.
+3. **`pi-game`** (`scripts/select-app.sh`, installed to `/usr/local/sbin`)
+   switches members: `sudo pi-game knockstrip`. With no argument it prints the
+   current member and the alternatives.
+
+The inactive member is stopped *and* disabled, so it consumes no memory and no
+cycles. Note that `isolcpus=3` still reserves a core for the LED matrix
+regardless of which game is active; changing that requires a reboot.
+
+Apps may also declare `bound_to: <app>`, which emits `PartOf=` and
+`WantedBy=<app>.service` so the app starts and stops with its parent rather
+than at boot. nfc-control uses this to follow lexacube.
+
 Pass one or more app names to bootstrap only those apps during initial
 provisioning, for example `sudo ./bootstrap.sh lexacube nfc-control knockstrip`.
+Group activation is skipped unless every member of that group was selected, so
+a partial run cannot silently switch games.
 With no app names, bootstrap installs every configured app. Selection is
 additive: bootstrap never disables services installed by an earlier run, and
 an unknown app name or incomplete `requires` selection fails before system
@@ -142,6 +193,7 @@ The bootstrap script can be run multiple times safely:
 - Venv creation skipped if exists
 - CPU isolation config only added if not present
 - Systemd service overwritten and restarted
+- The active member of an exclusive group is preserved, never reset to the default
 
 ## DietPi Templates
 
