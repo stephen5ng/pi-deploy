@@ -165,7 +165,7 @@ Three mechanisms, deliberately layered:
    whichever is already active, so re-running bootstrap never changes which
    game is live. `default_in_group: true` breaks the tie only on a fresh flash
    where no member has been enabled yet.
-3. **`pi-game`** (`scripts/select-app.sh`, installed to `/usr/local/sbin`)
+3. **`pi-game`** (`scripts/select-app.sh`, installed to `/usr/local/bin`)
    switches members: `sudo pi-game knockstrip`. With no argument it prints the
    current member and the alternatives.
 

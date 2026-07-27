@@ -701,9 +701,13 @@ for group in $groups; do
 done
 
 if [[ -n "$groups" && -f "$SCRIPT_DIR/scripts/select-app.sh" ]]; then
-    sed "s|@CONFIG@|$CONFIG|" "$SCRIPT_DIR/scripts/select-app.sh" > /usr/local/sbin/pi-game
-    chmod 755 /usr/local/sbin/pi-game
-    echo "Installed /usr/local/sbin/pi-game (run 'pi-game' to see or switch the active app)."
+    # /usr/local/bin, not sbin: showing the active app needs no privileges, and
+    # sbin is absent from the unprivileged PATH. Switching still requires root,
+    # which the script enforces itself.
+    rm -f /usr/local/sbin/pi-game
+    sed "s|@CONFIG@|$CONFIG|" "$SCRIPT_DIR/scripts/select-app.sh" > /usr/local/bin/pi-game
+    chmod 755 /usr/local/bin/pi-game
+    echo "Installed /usr/local/bin/pi-game (run 'pi-game' to see or switch the active app)."
     echo ""
 fi
 
