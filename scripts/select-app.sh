@@ -1,7 +1,7 @@
 #!/bin/bash
 # Switch which member of an exclusive app group is active.
 #
-# Installed by bootstrap.sh as /usr/local/sbin/pi-game. The systemd enable-state
+# Installed by bootstrap.sh as /usr/local/bin/pi-game. The systemd enable-state
 # is the source of truth for which member is active -- there is no separate
 # state file to drift -- so bootstrap preserves whatever this script sets.
 #
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 # @CONFIG@ is replaced by bootstrap with the absolute path of the apps.yaml it
-# deployed from, so the installed copy in /usr/local/sbin stays pointed at the
+# deployed from, so the installed copy in /usr/local/bin stays pointed at the
 # real checkout wherever that lives.
 CONFIG="${PI_DEPLOY_CONFIG:-@CONFIG@}"
 if [[ ! -f "$CONFIG" ]]; then
