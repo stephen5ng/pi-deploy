@@ -164,10 +164,23 @@ git_clone_or_update() {
             current_url="$ssh_url"
         fi
 
+        # --no-rebase, explicitly: a deployment checkout may legitimately carry
+        # local commits (per-rig config that must not be pushed), which makes
+        # the branch divergent. Without a strategy on the command line git
+        # refuses to pull at all unless pull.rebase happens to be configured on
+        # that particular Pi, so bootstrap would succeed or fail depending on
+        # ambient machine state. Merge keeps the local commits; on a clean
+        # checkout it is just a fast-forward.
+        # Bootstrap runs as root, which typically has no git identity, so a
+        # merge commit would abort with "Author identity unknown". Supply one
+        # explicitly rather than requiring every Pi to configure root's git.
+        local -a git_id=(-c "user.email=bootstrap@pi-deploy.local"
+                         -c "user.name=pi-deploy bootstrap")
+
         if [[ "$current_url" == *@github.com:* || "$current_url" == ssh://*github.com/* ]]; then
-            GIT_SSH_COMMAND="ssh $ssh_opts" git -C "$dest" pull
+            GIT_SSH_COMMAND="ssh $ssh_opts" git "${git_id[@]}" -C "$dest" pull --no-rebase
         else
-            git -C "$dest" pull
+            git "${git_id[@]}" -C "$dest" pull --no-rebase
         fi
     else
         echo "Cloning $repo..."
