@@ -790,6 +790,48 @@ usermod -a -G audio,dialout,gpio dietpi || true
 # Install Claude backend switch scripts for root and dietpi users
 echo "Installing Claude backend switch scripts..."
 
+# prepare_dietpi_sd.sh leaves the Z.ai key on the boot partition when
+# provisioning.env sets ZAI_API_KEY. The boot partition is FAT32 and cannot hold
+# file permissions, so the key is consumed here -- installed at 0600 in each
+# home, then removed from /boot. Later runs find no boot copy and leave the
+# installed key untouched, so re-bootstrapping never clobbers a hand-edited key.
+BOOT_ZAI_KEY="/boot/firmware/lexacube-zai-key"
+if [[ ! -f "$BOOT_ZAI_KEY" ]]; then
+    BOOT_ZAI_KEY="/boot/lexacube-zai-key"
+fi
+ZAI_KEY_VALUE=""
+if [[ -f "$BOOT_ZAI_KEY" ]]; then
+    ZAI_KEY_VALUE=$(tr -d '\r\n' < "$BOOT_ZAI_KEY")
+fi
+
+install_claude_code() {
+    # The aliases invoke `claude`, so the CLI has to exist for whichever user
+    # runs them. The native installer is per-user under ~/.local, so each home
+    # gets its own copy rather than sharing one across the privilege boundary.
+    local user_home=$1
+
+    if [[ -x "$user_home/.local/bin/claude" ]]; then
+        echo "  Claude Code already installed for $user_home"
+        return 0
+    fi
+    if ! command -v curl &> /dev/null; then
+        echo "  Warning: curl not found; skipping Claude Code install for $user_home"
+        return 0
+    fi
+
+    echo "  Installing Claude Code for $user_home..."
+    local -a installer=(bash -c 'curl -fsSL https://claude.ai/install.sh | bash')
+    if [[ "$user_home" != "/root" ]]; then
+        installer=(runuser -u dietpi -- env "HOME=$user_home" "${installer[@]}")
+    fi
+
+    # A network failure here must not abort a first-boot game deployment.
+    if ! HOME="$user_home" "${installer[@]}"; then
+        echo "  Warning: Claude Code install failed for $user_home;" \
+            "claude-ant/claude-zai will not work until it is installed"
+    fi
+}
+
 if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
     for USER_HOME in /root /home/dietpi; do
         CLAUDE_SWITCH_DIR="$USER_HOME/.claude-switch"
@@ -800,11 +842,25 @@ if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
         chmod +x "$CLAUDE_SWITCH_DIR"/*.sh
         echo "  Copied switch scripts to $CLAUDE_SWITCH_DIR"
 
-        if [[ ! -f "$CLAUDE_SWITCH_DIR/zai-key" ]]; then
+        if [[ -n "$ZAI_KEY_VALUE" ]]; then
+            printf '%s\n' "$ZAI_KEY_VALUE" > "$CLAUDE_SWITCH_DIR/zai-key"
+            chmod 600 "$CLAUDE_SWITCH_DIR/zai-key"
+            echo "  Installed provisioned Z.ai key in $CLAUDE_SWITCH_DIR/zai-key"
+        elif [[ ! -f "$CLAUDE_SWITCH_DIR/zai-key" ]]; then
             echo "# Add your Z.ai API key here (sk-zai-...)" > "$CLAUDE_SWITCH_DIR/zai-key.example"
         fi
 
+        install_claude_code "$USER_HOME"
+
         BASHRC_FILE="$USER_HOME/.bashrc"
+        PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+        if ! grep -qF "$PATH_LINE" "$BASHRC_FILE" 2>/dev/null; then
+            echo "" >> "$BASHRC_FILE"
+            echo "# Claude Code and other per-user tools install here" >> "$BASHRC_FILE"
+            echo "$PATH_LINE" >> "$BASHRC_FILE"
+            echo "  Added ~/.local/bin to PATH in $BASHRC_FILE"
+        fi
+
         ALIAS_MARKER="# Claude backend switch aliases"
         if ! grep -q "$ALIAS_MARKER" "$BASHRC_FILE" 2>/dev/null; then
             echo "" >> "$BASHRC_FILE"
@@ -821,7 +877,13 @@ if [[ -f "$SCRIPT_DIR/scripts/use-anthropic.sh" ]]; then
         fi
     done
 
-    echo "  Add your Z.ai key to ~/.claude-switch/zai-key"
+    if [[ -n "$ZAI_KEY_VALUE" ]]; then
+        rm -f "$BOOT_ZAI_KEY"
+        echo "  Removed the Z.ai key from the boot partition"
+    elif [[ ! -f /root/.claude-switch/zai-key ]]; then
+        echo "  Add your Z.ai key to ~/.claude-switch/zai-key"
+        echo "  (or set ZAI_API_KEY in provisioning.env before imaging)"
+    fi
     echo "  (Anthropic uses default authentication, no key needed)"
 else
     echo "  Warning: Switch scripts not found in $SCRIPT_DIR/scripts/"

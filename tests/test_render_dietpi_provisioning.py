@@ -125,6 +125,43 @@ class RenderDietPiProvisioningTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "8-63 characters"):
             provisioning.validate(values)
 
+    def test_renders_zai_key_only_when_provided(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = root / "provisioning.env"
+            dietpi_template = root / "dietpi.template.txt"
+            wifi_template = root / "dietpi-wifi.template.txt"
+            base_env = (
+                "WIFI_SSID='LEXACUBE'\n"
+                "WIFI_PASSWORD='game-night'\n"
+                "WIFI_COUNTRY='US'\n"
+                "DIETPI_PASSWORD='temporary-password'\n"
+            )
+            dietpi_template.write_text(DIETPI_TEMPLATE, encoding="utf-8")
+            wifi_template.write_text(WIFI_TEMPLATE, encoding="utf-8")
+
+            without_key = root / "without-key"
+            env.write_text(base_env + "ZAI_API_KEY=''\n", encoding="utf-8")
+            env.chmod(0o600)
+            provisioning.render_files(env, dietpi_template, wifi_template, without_key)
+            self.assertFalse((without_key / "lexacube-zai-key").exists())
+
+            with_key = root / "with-key"
+            env.write_text(base_env + "ZAI_API_KEY='sk-zai-secret'\n", encoding="utf-8")
+            env.chmod(0o600)
+            provisioning.render_files(env, dietpi_template, wifi_template, with_key)
+            key_file = with_key / "lexacube-zai-key"
+            self.assertEqual(key_file.read_text(encoding="utf-8"), "sk-zai-secret\n")
+            self.assertEqual(stat.S_IMODE(key_file.stat().st_mode), 0o600)
+
+    def test_rejects_zai_key_placeholder(self):
+        with self.assertRaisesRegex(ValueError, "example placeholder"):
+            provisioning.validate_zai_key("replace-with-your-zai-key")
+
+    def test_rejects_zai_key_containing_whitespace(self):
+        with self.assertRaisesRegex(ValueError, "no whitespace"):
+            provisioning.validate_zai_key("sk-zai secret")
+
     def test_rejects_non_hexadecimal_64_character_key(self):
         values = {
             "WIFI_SSID": "LEXACUBE",

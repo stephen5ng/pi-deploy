@@ -83,11 +83,24 @@ def validate(values: dict[str, str]) -> None:
         raise ValueError("WIFI_PASSWORD must contain printable ASCII characters")
     if not re.fullmatch(r"[A-Z]{2}", country):
         raise ValueError("WIFI_COUNTRY must be a two-letter uppercase country code")
+    validate_zai_key(values.get("ZAI_API_KEY", ""))
     if not 8 <= len(password.encode("utf-8")) <= 100:
         raise ValueError("DIETPI_PASSWORD must contain 8-100 bytes")
     if UNSAFE_DIETPI_PASSWORD_CHARACTERS.intersection(password):
         raise ValueError(
             'DIETPI_PASSWORD cannot contain characters DietPi warns against: $"|\\'
+        )
+
+
+def validate_zai_key(key: str) -> None:
+    """ZAI_API_KEY is optional; the `claude-zai` alias is unusable without it."""
+    if not key:
+        return
+    if key == "replace-with-your-zai-key":
+        raise ValueError("ZAI_API_KEY still contains the example placeholder")
+    if any(not 33 <= ord(character) <= 126 for character in key):
+        raise ValueError(
+            "ZAI_API_KEY must contain printable ASCII characters and no whitespace"
         )
 
 
@@ -160,6 +173,10 @@ def render_files(
             wifi_template.read_text(encoding="utf-8"), values
         ),
     }
+    # Consumed and deleted by bootstrap.sh on first boot, which is the only
+    # place it can be given permissions -- the boot partition is FAT32.
+    if values.get("ZAI_API_KEY"):
+        outputs[output_directory / "lexacube-zai-key"] = values["ZAI_API_KEY"] + "\n"
     for path, content in outputs.items():
         path.write_text(content, encoding="utf-8", newline="\n")
         os.chmod(path, 0o600)
