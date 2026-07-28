@@ -581,6 +581,7 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     if [[ -n "$service_address" ]]; then
         address_service="${name}-address.service"
         address_helper="/usr/local/sbin/service-address"
+        address_bare=${service_address%%/*}
 
         echo "Creating service address unit for $name ($service_address)..."
         install -m 755 "$SCRIPT_DIR/scripts/service-address.sh" "$address_helper"
@@ -602,6 +603,51 @@ EOF
         chmod 644 "/etc/systemd/system/$address_service"
         address_unit="Requires=$address_service
 After=$address_service"
+
+        # ifdown flushes every address on the interface, taking this secondary
+        # alias with it; ifup restores only the DHCP lease. The unit above is a
+        # oneshot with RemainAfterExit, so systemd keeps reporting it active and
+        # never re-adds the alias. DietPi's WiFi monitor runs ifdown/ifup on
+        # every connection loss, so without this hook the address vanishes
+        # silently on the first WiFi blip and nothing reports a failure.
+        address_hook="/etc/network/if-up.d/50-${name}-address"
+        cat > "$address_hook" <<EOF
+#!/bin/sh
+# Managed by pi-deploy: re-claim $service_address for $name after ifup.
+
+if [ "\$IFACE" = "lo" ]; then
+    exit 0
+fi
+
+# Reclaim only while $name still owns the address; a stopped service must not
+# have it handed back by an unrelated interface event.
+if ! systemctl is-active --quiet $address_service; then
+    exit 0
+fi
+
+if ip -o -4 address show | awk -v target="$address_bare" \\
+        '\$4 == target || index(\$4, target "/") == 1 { found = 1 }
+         END { exit(found ? 0 : 1) }'; then
+    exit 0
+fi
+
+# Re-add through the helper rather than restarting $address_service:
+# $name.service has Requires= on it, so a restart stops and restarts the app.
+# Detached because the helper's arping probe can take ~20s and ifup must not
+# block on it.
+if command -v systemd-run >/dev/null 2>&1; then
+    systemd-run --collect --unit=${name}-address-reclaim \\
+        $address_helper start $service_address $service_address_interface \\
+        >/dev/null 2>&1 || true
+else
+    setsid $address_helper start $service_address $service_address_interface \\
+        >/dev/null 2>&1 &
+fi
+exit 0
+EOF
+        chmod 755 "$address_hook"
+    else
+        rm -f "/etc/network/if-up.d/50-${name}-address"
     fi
 
     env_lines=""
