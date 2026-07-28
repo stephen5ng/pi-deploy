@@ -820,7 +820,10 @@ install_claude_code() {
     fi
 
     echo "  Installing Claude Code for $user_home..."
-    local -a installer=(bash -c 'curl -fsSL https://claude.ai/install.sh | bash')
+    # pipefail is not inherited by a fresh `bash -c`, and without it a failed
+    # curl is masked by the downstream bash exiting 0 on empty stdin -- the
+    # install would silently "succeed" with no CLI and no warning.
+    local -a installer=(bash -o pipefail -c 'curl -fsSL https://claude.ai/install.sh | bash')
     if [[ "$user_home" != "/root" ]]; then
         installer=(runuser -u dietpi -- env "HOME=$user_home" "${installer[@]}")
     fi
