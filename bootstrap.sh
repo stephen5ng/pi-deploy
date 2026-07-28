@@ -610,6 +610,29 @@ After=$address_service"
         # never re-adds the alias. DietPi's WiFi monitor runs ifdown/ifup on
         # every connection loss, so without this hook the address vanishes
         # silently on the first WiFi blip and nothing reports a failure.
+        # The hook cannot add the address itself: the probe outlives the hook, so
+        # the app can be stopped while it runs and the address unit's ExecStop
+        # can remove the address before this process puts it back, leaving the
+        # address claimed by a stopped app. Ownership is therefore rechecked
+        # after the probe, from a trap so it runs whether the reclaim exits
+        # normally or is torn down by BindsTo= when the address unit stops.
+        reclaim_helper="/usr/local/sbin/${name}-address-reclaim"
+        cat > "$reclaim_helper" <<EOF
+#!/bin/sh
+# Managed by pi-deploy: claim $service_address for $name, then verify $name
+# still owns it.
+
+release_if_orphaned() {
+    systemctl is-active --quiet $address_service && return 0
+    $address_helper stop $service_address $service_address_interface \\
+        >/dev/null 2>&1 || true
+}
+trap release_if_orphaned EXIT TERM INT
+
+$address_helper start $service_address $service_address_interface
+EOF
+        chmod 755 "$reclaim_helper"
+
         address_hook="/etc/network/if-up.d/50-${name}-address"
         cat > "$address_hook" <<EOF
 #!/bin/sh
@@ -631,23 +654,23 @@ if ip -o -4 address show | awk -v target="$address_bare" \\
     exit 0
 fi
 
-# Re-add through the helper rather than restarting $address_service:
+# Re-add through the reclaim helper rather than restarting $address_service:
 # $name.service has Requires= on it, so a restart stops and restarts the app.
-# Detached because the helper's arping probe can take ~20s and ifup must not
-# block on it.
+# Detached because the arping probe can take ~20s and ifup must not block on it.
 if command -v systemd-run >/dev/null 2>&1; then
     systemd-run --collect --unit=${name}-address-reclaim \\
-        $address_helper start $service_address $service_address_interface \\
-        >/dev/null 2>&1 || true
+        --property=BindsTo=$address_service \\
+        --property=After=$address_service \\
+        $reclaim_helper >/dev/null 2>&1 || true
 else
-    setsid $address_helper start $service_address $service_address_interface \\
-        >/dev/null 2>&1 &
+    setsid $reclaim_helper >/dev/null 2>&1 &
 fi
 exit 0
 EOF
         chmod 755 "$address_hook"
     else
         rm -f "/etc/network/if-up.d/50-${name}-address"
+        rm -f "/usr/local/sbin/${name}-address-reclaim"
     fi
 
     env_lines=""
