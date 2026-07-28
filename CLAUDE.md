@@ -82,6 +82,8 @@ The system configures `isolcpus=3` in `/boot/cmdline.txt` to dedicate CPU core 3
 - `bootstrap.sh` - Main automation script that reads apps.yaml and performs deployment
 - `dietpi.template.txt` - Pre-boot DietPi configuration (copy to /boot before first boot)
 - `dietpi-wifi.template.txt` - WiFi credentials template (copy to /boot before first boot)
+- `knockstrip.env.template.txt` - knockstrip credentials template (fill in, copy to
+  /boot as `knockstrip.env`; bootstrap installs it to /etc/knockstrip.env)
 
 ## Important Context
 
@@ -133,8 +135,40 @@ When modifying application configuration:
   enforces that it stays byte-identical to `ops/knockstrip-preflight.service`
   on every execution directive. Do not reintroduce `exec:` for this app — a
   generated unit would be a lossy copy that silently drifts.
-- Reads secrets from `/etc/knockstrip.env` (picked up by bootstrap's
-  `/etc/<name>.env` convention)
+- Reads secrets from `/etc/knockstrip.env`, installed by bootstrap from
+  `/boot/knockstrip.env` if present (see Per-Rig Files and Secrets)
+- `station_ids.yaml` and `config.local.yaml` are provisioned from `rig_files`
+
+### Per-Rig Files and Secrets
+
+Some values describe *this installation* and are gitignored in the app repo, so a
+reflash loses them and the app comes up wrong or refuses to start. Two mechanisms
+cover them, split by whether the value is a secret.
+
+**`rig_files`** (in apps.yaml) — non-secret per-rig values, stored inline:
+
+```yaml
+rig_files:
+  - path: station_ids.yaml        # relative to the app path
+    content: |
+      station_ids: [3, 4, 6, 8, 12, 13, 24, 20, 22, 23]
+```
+
+Recording the rig's real values here is not the app "guessing" a default — the
+knockstrip warning against a guessed `station_ids` map is about the *software*
+inventing one, which would drive the wrong boxes. This is the deployment repo
+remembering what is actually wired. Update it when the rig is rewired.
+
+Policy is **write if absent, warn if different**: an existing file is never
+clobbered (someone may be mid-way through tuning on the box), but a difference
+is reported with a diff on every run so drift is visible rather than silent.
+
+**`/boot/<name>.env`** — secrets, which cannot be defaulted or committed. Drop the
+file on the boot partition during SD prep, the same way `dietpi.txt` and
+`dietpi-wifi.txt` are placed; bootstrap installs it to `/etc/<name>.env` (mode
+0600), which the generated unit already reads via `EnvironmentFile`. See
+`knockstrip.env.template.txt`. Same write-if-absent policy, and the diff is
+never printed.
 
 ### Systemd Service Pattern
 
@@ -252,6 +286,8 @@ Anthropic needs no key — `use-anthropic.sh` just unsets the Z.ai overrides.
 These files are used during SD card preparation (before first boot):
 - Customize `dietpi.template.txt` and copy to `/boot/dietpi.txt` for unattended setup
 - Customize `dietpi-wifi.template.txt` and copy to `/boot/dietpi-wifi.txt` for WiFi
+- Customize `knockstrip.env.template.txt` and copy to `/boot/knockstrip.env` so the
+  game's credentials survive a reflash
 - Must be placed on boot partition before powering on the Pi
 
 ## Reliability & Observability
