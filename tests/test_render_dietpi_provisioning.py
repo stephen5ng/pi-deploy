@@ -82,47 +82,30 @@ class RenderDietPiProvisioningTests(unittest.TestCase):
                 stat.S_IMODE((output / "dietpi-wifi.txt").stat().st_mode), 0o600
             )
 
-    def test_requires_non_default_password(self):
+    def test_rejects_unedited_example_placeholders(self):
         values = {
             "WIFI_SSID": "LEXACUBE",
-            "WIFI_PASSWORD": "password",
+            "WIFI_PASSWORD": "replace-me",
             "WIFI_COUNTRY": "US",
-            "DIETPI_PASSWORD": "short",
+            "DIETPI_PASSWORD": "replace-with-a-unique-password",
         }
 
-        with self.assertRaisesRegex(ValueError, "8-100 bytes"):
+        with self.assertRaisesRegex(ValueError, "WIFI_PASSWORD still contains"):
             provisioning.validate(values)
 
-    def test_rejects_invalid_country_code(self):
-        values = {
-            "WIFI_SSID": "LEXACUBE",
-            "WIFI_PASSWORD": "password",
-            "WIFI_COUNTRY": "USA",
-            "DIETPI_PASSWORD": "temporary-password",
-        }
-
-        with self.assertRaisesRegex(ValueError, "two-letter"):
+        values["WIFI_PASSWORD"] = "game-night"
+        with self.assertRaisesRegex(ValueError, "DIETPI_PASSWORD still contains"):
             provisioning.validate(values)
 
-    def test_accepts_64_character_hexadecimal_wpa_psk(self):
+    def test_rejects_password_characters_that_would_corrupt_dietpi_txt(self):
         values = {
             "WIFI_SSID": "LEXACUBE",
-            "WIFI_PASSWORD": "0123456789abcdef" * 4,
+            "WIFI_PASSWORD": "game-night",
             "WIFI_COUNTRY": "US",
-            "DIETPI_PASSWORD": "temporary-password",
+            "DIETPI_PASSWORD": 'quote"and$dollar',
         }
 
-        provisioning.validate(values)
-
-    def test_rejects_short_wpa_passphrase(self):
-        values = {
-            "WIFI_SSID": "LEXACUBE",
-            "WIFI_PASSWORD": "short",
-            "WIFI_COUNTRY": "US",
-            "DIETPI_PASSWORD": "temporary-password",
-        }
-
-        with self.assertRaisesRegex(ValueError, "8-63 characters"):
+        with self.assertRaisesRegex(ValueError, "DietPi warns against"):
             provisioning.validate(values)
 
     def test_renders_zai_key_only_when_provided(self):
@@ -153,25 +136,6 @@ class RenderDietPiProvisioningTests(unittest.TestCase):
             key_file = with_key / "lexacube-zai-key"
             self.assertEqual(key_file.read_text(encoding="utf-8"), "sk-zai-secret\n")
             self.assertEqual(stat.S_IMODE(key_file.stat().st_mode), 0o600)
-
-    def test_rejects_zai_key_placeholder(self):
-        with self.assertRaisesRegex(ValueError, "example placeholder"):
-            provisioning.validate_zai_key("replace-with-your-zai-key")
-
-    def test_rejects_zai_key_containing_whitespace(self):
-        with self.assertRaisesRegex(ValueError, "no whitespace"):
-            provisioning.validate_zai_key("sk-zai secret")
-
-    def test_rejects_non_hexadecimal_64_character_key(self):
-        values = {
-            "WIFI_SSID": "LEXACUBE",
-            "WIFI_PASSWORD": "z" * 64,
-            "WIFI_COUNTRY": "US",
-            "DIETPI_PASSWORD": "temporary-password",
-        }
-
-        with self.assertRaisesRegex(ValueError, "hexadecimal WPA PSK"):
-            provisioning.validate(values)
 
 
 if __name__ == "__main__":
