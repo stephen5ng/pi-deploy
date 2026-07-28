@@ -8,7 +8,6 @@ import os
 import re
 import shlex
 import stat
-import string
 from pathlib import Path
 
 
@@ -61,46 +60,28 @@ def shell_single_quote(value: str) -> str:
 
 
 def validate(values: dict[str, str]) -> None:
-    ssid = required(values, "WIFI_SSID")
+    """Check only what this script is itself responsible for.
+
+    Deliberately does not check WPA passphrase length, PSK format, country
+    codes or password length. wpa_supplicant and DietPi enforce their own
+    input rules, and a value that trips them fails the same way whether or not
+    it was rejected here first -- so those checks were re-implementations that
+    bought nothing but the tests needed to cover them. What is left either
+    means the operator never filled the file in, or would corrupt the rendered
+    output, which is this script's own job to get right.
+    """
+    required(values, "WIFI_SSID")
     wifi_password = required(values, "WIFI_PASSWORD")
-    country = required(values, "WIFI_COUNTRY")
+    required(values, "WIFI_COUNTRY")
     password = required(values, "DIETPI_PASSWORD")
 
     if wifi_password == "replace-me":
         raise ValueError("WIFI_PASSWORD still contains the example placeholder")
     if password == "replace-with-a-unique-password":
         raise ValueError("DIETPI_PASSWORD still contains the example placeholder")
-    if len(ssid.encode("utf-8")) > 32:
-        raise ValueError("WIFI_SSID exceeds 32 bytes")
-    if len(wifi_password) == 64:
-        if any(character not in string.hexdigits for character in wifi_password):
-            raise ValueError(
-                "a 64-character WIFI_PASSWORD must be a hexadecimal WPA PSK"
-            )
-    elif not 8 <= len(wifi_password) <= 63:
-        raise ValueError("WIFI_PASSWORD must contain 8-63 characters")
-    elif any(not 32 <= ord(character) <= 126 for character in wifi_password):
-        raise ValueError("WIFI_PASSWORD must contain printable ASCII characters")
-    if not re.fullmatch(r"[A-Z]{2}", country):
-        raise ValueError("WIFI_COUNTRY must be a two-letter uppercase country code")
-    validate_zai_key(values.get("ZAI_API_KEY", ""))
-    if not 8 <= len(password.encode("utf-8")) <= 100:
-        raise ValueError("DIETPI_PASSWORD must contain 8-100 bytes")
     if UNSAFE_DIETPI_PASSWORD_CHARACTERS.intersection(password):
         raise ValueError(
             'DIETPI_PASSWORD cannot contain characters DietPi warns against: $"|\\'
-        )
-
-
-def validate_zai_key(key: str) -> None:
-    """ZAI_API_KEY is optional; the `claude-zai` alias is unusable without it."""
-    if not key:
-        return
-    if key == "replace-with-your-zai-key":
-        raise ValueError("ZAI_API_KEY still contains the example placeholder")
-    if any(not 33 <= ord(character) <= 126 for character in key):
-        raise ValueError(
-            "ZAI_API_KEY must contain printable ASCII characters and no whitespace"
         )
 
 

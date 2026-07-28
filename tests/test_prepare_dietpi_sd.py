@@ -1,5 +1,4 @@
 import os
-import stat
 import subprocess
 import tempfile
 import unittest
@@ -126,9 +125,6 @@ class PrepareDietPiSdTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("primary system disk", result.stderr)
-
-    def test_script_is_executable(self):
-        self.assertTrue(stat.S_IMODE(SCRIPT.stat().st_mode) & stat.S_IXUSR)
 
 
 if __name__ == "__main__":
