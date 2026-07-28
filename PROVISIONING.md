@@ -12,7 +12,8 @@ cp provisioning.env.example provisioning.env
 chmod 600 provisioning.env
 ```
 
-Set the WiFi network, a unique DietPi password, and optionally an SSH public key.
+Set the WiFi network, a unique DietPi password, and optionally an SSH public key
+and a `ZAI_API_KEY` for the `claude-zai` alias.
 Install Raspberry Pi Imager if needed:
 
 ```sh
@@ -71,3 +72,11 @@ The WiFi values are consumed by DietPi into its root-only WiFi database.
 `bootstrap.sh` uses that local database to generate the ignored ESP32 firmware
 header. Neither `provisioning.env` nor populated firmware credentials are
 committed to Git.
+
+`ZAI_API_KEY`, when set, is staged on the boot partition as `lexacube-zai-key`.
+On first boot `bootstrap.sh` installs it as `~/.claude-switch/zai-key` (0600)
+for both `root` and `dietpi` and deletes the boot copy, since the FAT32 boot
+partition cannot hold permissions. Bootstrap also installs the Claude Code CLI
+for both users, so the `claude-ant` and `claude-zai` aliases work on a fresh
+flash. To set the key later instead, write it to `~/.claude-switch/zai-key` by
+hand — bootstrap never overwrites an installed key.

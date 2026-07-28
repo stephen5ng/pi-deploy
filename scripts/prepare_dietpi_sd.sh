@@ -196,6 +196,10 @@ cp "$WORK_DIRECTORY/rendered/dietpi.txt" "$BOOT_MOUNT/dietpi.txt"
 cp "$WORK_DIRECTORY/rendered/dietpi-wifi.txt" "$BOOT_MOUNT/dietpi-wifi.txt"
 cp "$WORK_DIRECTORY/rendered/Automation_Custom_Script.sh" \
     "$BOOT_MOUNT/Automation_Custom_Script.sh"
+if [[ -f "$WORK_DIRECTORY/rendered/lexacube-zai-key" ]]; then
+    cp "$WORK_DIRECTORY/rendered/lexacube-zai-key" "$BOOT_MOUNT/lexacube-zai-key"
+    echo "  Z.ai key staged; bootstrap.sh installs it and removes it from /boot."
+fi
 sync
 diskutil eject "$DEVICE" > /dev/null
 
