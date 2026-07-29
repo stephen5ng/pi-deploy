@@ -21,6 +21,13 @@ apps:
       - LED_DISPLAY_TYPE=mini
       - LEXACUBE_ADMIN_HOST=0.0.0.0
       - LEXACUBE_ADMIN_PORT=8080
+    extra_units:
+      # The admin page runs as its own service so it survives the game
+      # restarts it triggers (updates, panel tests). The cubes repo owns the
+      # unit; requires cubes master to contain deploy/lexacube-admin.service
+      # (PR #42) or bootstrap fails fast.
+      - source: deploy/lexacube-admin.service
+        enable: true
     apt_packages:
       - python3-dev
       - python3-pillow

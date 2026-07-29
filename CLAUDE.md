@@ -195,6 +195,16 @@ already in use by another host. Legacy hosts where the service address is still
 the primary static address must be migrated to DHCP administratively before
 deployment.
 
+Apps may declare `extra_units` — sibling unit files shipped in the app repo,
+installed to `/etc/systemd/system` regardless of whether the app's main unit
+is generated or repo-owned (`unit_source`). A plain string entry is installed
+only; the main unit is what wires it in (knockstrip's preflight). A map entry
+`{source: ..., enable: true}` is also enabled and restarted on every
+bootstrap, for units that stand on their own — lexacube's admin page uses
+this so the page outlives the game restarts it triggers. Missing declared
+units fail the bootstrap fast; for lexacube that means cubes master must
+contain `deploy/lexacube-admin.service` before bootstrapping.
+
 ### Exclusive App Groups
 
 Every app is always *installed*; whether it *runs* is separate. Apps sharing an

@@ -702,21 +702,6 @@ EnvironmentFile=/etc/${name}.env"
         fi
         echo "Installing unit from app repo: $unit_source"
         install -m 644 "$path/$unit_source" "/etc/systemd/system/${name}.service"
-
-        extra_unit_count=$(yq -r ".apps[$app_idx].extra_units | length" "$CONFIG" 2>/dev/null || echo "0")
-        for ((i=0; i<extra_unit_count; i++)); do
-            extra_unit=$(yq -r ".apps[$app_idx].extra_units[$i]" "$CONFIG")
-            if [[ "$extra_unit" == /* || "$extra_unit" == *".."* ]]; then
-                echo "extra_units entries must be relative paths without '..': $extra_unit" >&2
-                exit 1
-            fi
-            if [[ ! -f "$path/$extra_unit" ]]; then
-                echo "Declared extra unit not found: $path/$extra_unit" >&2
-                exit 1
-            fi
-            echo "  Installing sibling unit: $(basename "$extra_unit")"
-            install -m 644 "$path/$extra_unit" "/etc/systemd/system/$(basename "$extra_unit")"
-        done
     else
         if [[ -z "$exec" ]]; then
             echo "App $name needs either an 'exec' or a 'unit_source'." >&2
@@ -753,6 +738,38 @@ WantedBy=$install_target
 EOF
         chmod 644 "/etc/systemd/system/${name}.service"
     fi
+
+    # Sibling units shipped by the app repo, available to both unit styles.
+    # A plain string entry is installed only -- the app's main unit is what
+    # wires it in (knockstrip's preflight works this way). A map entry with
+    # `enable: true` is also enabled and restarted after daemon-reload, for
+    # units that stand on their own (lexacube's admin page).
+    extra_units_to_enable=""
+    extra_unit_count=$(yq -r ".apps[$app_idx].extra_units | length" "$CONFIG" 2>/dev/null || echo "0")
+    for ((i=0; i<extra_unit_count; i++)); do
+        # python-yq says "object", go yq says "!!map"; accept either.
+        entry_type=$(yq -r ".apps[$app_idx].extra_units[$i] | type" "$CONFIG")
+        if [[ "$entry_type" == "object" || "$entry_type" == "!!map" ]]; then
+            extra_unit=$(yq -r ".apps[$app_idx].extra_units[$i].source" "$CONFIG")
+            extra_enable=$(yq -r ".apps[$app_idx].extra_units[$i].enable // false" "$CONFIG")
+        else
+            extra_unit=$(yq -r ".apps[$app_idx].extra_units[$i]" "$CONFIG")
+            extra_enable="false"
+        fi
+        if [[ "$extra_unit" == /* || "$extra_unit" == *".."* ]]; then
+            echo "extra_units entries must be relative paths without '..': $extra_unit" >&2
+            exit 1
+        fi
+        if [[ ! -f "$path/$extra_unit" ]]; then
+            echo "Declared extra unit not found: $path/$extra_unit" >&2
+            exit 1
+        fi
+        echo "  Installing sibling unit: $(basename "$extra_unit")"
+        install -m 644 "$path/$extra_unit" "/etc/systemd/system/$(basename "$extra_unit")"
+        if [[ "$extra_enable" == "true" ]]; then
+            extra_units_to_enable="$extra_units_to_enable $(basename "$extra_unit")"
+        fi
+    done
 
     # Exclusivity is applied as a drop-in so it composes with repo-owned units.
     dropin_dir="/etc/systemd/system/${name}.service.d"
@@ -793,6 +810,14 @@ EOF
         systemctl restart "${name}.service"
         echo "Service $name started."
     fi
+
+    # Self-standing sibling units run regardless of the app's own activation
+    # (a deferred group member still gets its admin page).
+    for extra_unit_name in $extra_units_to_enable; do
+        systemctl enable "$extra_unit_name"
+        systemctl restart "$extra_unit_name"
+        echo "Sibling unit $extra_unit_name started."
+    done
     echo ""
 done
 
