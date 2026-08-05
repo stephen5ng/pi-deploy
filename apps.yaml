@@ -67,6 +67,18 @@ apps:
     after: "network.target mosquitto.service"
     requires:
       - lexacube
+    # The daemon exits on MqttError the moment it cannot reach the broker, so
+    # `After=` alone left it restarting every 5s forever whenever mosquitto was
+    # down -- spinning long enough to rotate the journal past the entry that
+    # said why mosquitto stopped. requires_units emits Requires=, so this
+    # starts, restarts and stops with the broker; the start limit turns an
+    # otherwise endless retry into a failed unit after 5 attempts in 5
+    # minutes, visible in `systemctl status` instead of buried in log noise.
+    requires_units:
+      - mosquitto.service
+    start_limit:
+      interval_sec: 300
+      burst: 5
     # Reuses lexacube's venv and only talks to lexacube over MQTT, so it has
     # nothing to do while a different game is active. bound_to makes it start
     # and stop with lexacube rather than at boot.

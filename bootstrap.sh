@@ -302,6 +302,15 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     exclusive_group=$(yq -r ".apps[$app_idx].exclusive_group // empty" "$CONFIG")
     bound_to=$(yq -r ".apps[$app_idx].bound_to // empty" "$CONFIG")
     unit_source=$(yq -r ".apps[$app_idx].unit_source // empty" "$CONFIG")
+    # Systemd units this app cannot run without. Distinct from the top-level
+    # `requires`, which selects *apps* to bootstrap; these become Requires= so
+    # a missing dependency stops the app instead of restarting it forever.
+    requires_units=$(yq -r \
+        ".apps[$app_idx].requires_units // [] | join(\" \")" "$CONFIG")
+    start_limit_interval=$(yq -r \
+        ".apps[$app_idx].start_limit.interval_sec // empty" "$CONFIG")
+    start_limit_burst=$(yq -r \
+        ".apps[$app_idx].start_limit.burst // empty" "$CONFIG")
 
     echo "--- App: $name ---"
     echo "Repo:   $repo"
@@ -708,6 +717,33 @@ EnvironmentFile=/etc/${name}.env"
             exit 1
         fi
 
+        # Requires= covers the whole lifecycle on its own: it pulls the
+        # dependency in on start, and systemd.unit(5) states the dependent
+        # "will be stopped (or restarted) if one of the other units is
+        # explicitly stopped (or restarted)". So `systemctl restart mosquitto`
+        # restarts this app rather than leaving it dead. No PartOf= here --
+        # PartOf= is documented as "similar to Requires=, but limited to
+        # stopping and restarting", i.e. a strict subset of what Requires=
+        # already provides.
+        requires_unit=""
+        if [[ -n "$requires_units" ]]; then
+            requires_unit="Requires=$requires_units"
+        fi
+
+        # Without a start limit, Restart=on-failure plus RestartSec=5 retries
+        # forever: five restarts take ~25s, which never fits systemd's default
+        # 10s window, so the counter never trips. A daemon whose dependency is
+        # gone then spins indefinitely and floods the journal -- which is how a
+        # stopped mosquitto erased the logs that would have explained it.
+        start_limit_unit=""
+        if [[ -n "$start_limit_interval" ]]; then
+            start_limit_unit="StartLimitIntervalSec=$start_limit_interval"
+        fi
+        if [[ -n "$start_limit_burst" ]]; then
+            start_limit_unit="$start_limit_unit
+StartLimitBurst=$start_limit_burst"
+        fi
+
         bound_unit=""
         install_target="multi-user.target"
         if [[ -n "$bound_to" ]]; then
@@ -722,6 +758,8 @@ After=${bound_to}.service"
 [Unit]
 Description=$name service
 After=$after
+$requires_unit
+$start_limit_unit
 $address_unit
 $bound_unit
 

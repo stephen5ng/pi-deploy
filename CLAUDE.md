@@ -129,7 +129,11 @@ When modifying application configuration:
 - Lives in: `/opt/nfc-control`
 - Runs: `/opt/lexacube/cube_env/bin/python3 /opt/nfc-control/nfc_control_daemon.py`
 - Reuses lexacube's venv (aiomqtt already installed there)
-- Requires: `After=mosquitto.service` (configured via `after` field in apps.yaml)
+- `After=mosquitto.service` plus `Requires=mosquitto.service` and a start limit
+  of 5 attempts per 300s (`requires_units` / `start_limit` in apps.yaml). The
+  daemon raises `MqttError` and exits the instant the broker refuses a
+  connection, so without these a stopped mosquitto meant a restart every 5s
+  indefinitely
 - `bound_to: lexacube`, so it starts and stops with lexacube instead of at boot
 
 **knockstrip** — LED strip game
@@ -185,6 +189,24 @@ Services created by bootstrap.sh have:
 - `After` dependencies from the `after` field in apps.yaml (defaults to `network.target`)
 - WorkingDirectory set to app path
 - ExecStart pointing to configured exec script
+
+Apps may declare `requires_units` (a list of systemd units) and `start_limit`
+(`interval_sec`, `burst`). These exist because `after:` alone is not a
+dependency: with `Restart=on-failure` and `RestartSec=5`, an app whose
+dependency is missing retries forever, and five retries take ~25s — which never
+fits systemd's default 10s `StartLimitIntervalSec`, so the burst counter never
+trips. The loop then floods the journal and, on a Pi with volatile logs, rotates
+away the entry explaining what actually broke. `requires_units` emits
+`Requires=`, which covers the whole lifecycle: it pulls the dependency in on
+start, and per systemd.unit(5) the dependent "will be stopped (or restarted) if
+one of the other units is explicitly stopped (or restarted)" — so a routine
+`systemctl restart mosquitto` restarts the app rather than leaving it dead.
+Do not add `PartOf=` alongside it: `PartOf=` is documented as "similar to
+`Requires=`, but limited to stopping and restarting", a strict subset of what
+`Requires=` already does. `start_limit` widens the window enough that the burst
+is reachable, turning an endless retry into a `failed` unit. nfc-control uses
+both against `mosquitto.service`. Note `requires_units` is unrelated to the
+top-level `requires`, which selects which *apps* bootstrap installs.
 
 Apps may define `service_address.address` and an optional
 `service_address.interface` (`auto` by default). Bootstrap installs a separate
