@@ -717,17 +717,17 @@ EnvironmentFile=/etc/${name}.env"
             exit 1
         fi
 
-        # Requires= pulls the dependency in and stops this app when it stops.
-        # PartOf= on the same units adds the half Requires= leaves out: restart
-        # propagation. Without it, `systemctl restart mosquitto` -- the single
-        # most likely thing anyone does to that broker -- stops the dependent
-        # and never starts it again, trading an obvious restart loop for a
-        # daemon that is silently dead until someone notices the tags do
-        # nothing. Together: starts with it, restarts with it, stops with it.
+        # Requires= covers the whole lifecycle on its own: it pulls the
+        # dependency in on start, and systemd.unit(5) states the dependent
+        # "will be stopped (or restarted) if one of the other units is
+        # explicitly stopped (or restarted)". So `systemctl restart mosquitto`
+        # restarts this app rather than leaving it dead. No PartOf= here --
+        # PartOf= is documented as "similar to Requires=, but limited to
+        # stopping and restarting", i.e. a strict subset of what Requires=
+        # already provides.
         requires_unit=""
         if [[ -n "$requires_units" ]]; then
-            requires_unit="Requires=$requires_units
-PartOf=$requires_units"
+            requires_unit="Requires=$requires_units"
         fi
 
         # Without a start limit, Restart=on-failure plus RestartSec=5 retries

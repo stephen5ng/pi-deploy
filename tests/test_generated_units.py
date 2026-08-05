@@ -137,10 +137,12 @@ class GeneratedUnitTests(unittest.TestCase):
         self.assertIn("Requires=mosquitto.service", unit)
         self.assertIn("StartLimitIntervalSec=300", unit)
         self.assertIn("StartLimitBurst=5", unit)
-        # PartOf= is what makes a dependency *restart* propagate. Requires=
-        # alone only propagates stop, so a routine `systemctl restart
-        # mosquitto` would leave this app stopped for good.
-        self.assertIn("PartOf=mosquitto.service", unit)
+        # No PartOf= for a required unit. systemd.unit(5) documents Requires=
+        # as propagating explicit stop *and* restart, and PartOf= as "similar
+        # to Requires=, but limited to stopping and restarting" -- a strict
+        # subset. Emitting both says the same thing twice and invites the
+        # reader to infer a difference that does not exist.
+        self.assertNotIn("PartOf=mosquitto.service", unit)
         self.assertNotIn(
             "Requires=mosquitto.service", directives(render(), "Service")
         )
@@ -182,9 +184,8 @@ class NfcControlConfigurationTests(unittest.TestCase):
         )
         self.assertIn("Requires=mosquitto.service", unit)
         self.assertIn(f"StartLimitIntervalSec={interval}", unit)
-        # Both parents propagate: the game it follows, and the broker it cannot
-        # run without.
-        self.assertIn("PartOf=mosquitto.service", unit)
+        # bound_to still emits its own PartOf=: nfc-control follows lexacube
+        # without requiring it, which is exactly the case PartOf= exists for.
         self.assertIn("PartOf=lexacube.service", unit)
 
 
