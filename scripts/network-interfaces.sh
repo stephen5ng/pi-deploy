@@ -159,8 +159,12 @@ fi
 # ---------------------------------------------------------------------------
 # 2b. The subnet-route half, which dhclient cannot do.
 #
-# An if-up.d hook rather than a `post-up` line: it must also run when dhclient
-# renews a lease and re-adds the route, not only on ifup.
+# Installed in two places, because neither covers the other. An if-up.d hook
+# rather than a `post-up` line, so it applies to every ifup; AND a dhclient
+# exit hook, because if-up.d is run by ifup and not by dhclient at all. An
+# earlier version of this comment claimed the one covered lease renewals. It
+# does not -- see the exit hook below for what actually happens on a renewal
+# that changes the address.
 # ---------------------------------------------------------------------------
 echo "  [2/3] installing route-metric hook"
 cat > /usr/local/sbin/pi-deploy-route-metrics <<EOF
@@ -228,6 +232,42 @@ cat > /etc/network/if-up.d/50-pi-deploy-route-metrics <<'EOF'
 exit 0
 EOF
 chmod 755 /etc/network/if-up.d/50-pi-deploy-route-metrics
+
+# ...and again from a dhclient exit hook, which is the path that actually
+# covers a renewal.
+#
+# /etc/network/if-up.d is run by ifup. It is NOT run by dhclient: the Debian
+# /sbin/dhclient-script handles RENEW and REBIND itself and calls
+# /etc/dhcp/dhclient-exit-hooks.d instead -- verified on the rig, the string
+# "if-up.d" does not appear in that script at all. An earlier comment here
+# claimed if-up.d covered renewals. It does not.
+#
+# It matters on the path where the lease comes back with a different address.
+# dhclient-script then runs `ip -4 addr flush dev $interface label $interface`
+# and re-adds, which destroys the metric route installed above and leaves the
+# kernel's fresh metric-0 one in its place -- so the wired preference silently
+# reverts to a coin toss until the next ifup. The common renewal, where the
+# address is unchanged, takes an `ip addr change` path that leaves routes
+# alone, which is why this has not been noticed.
+mkdir -p /etc/dhcp/dhclient-exit-hooks.d
+cat > /etc/dhcp/dhclient-exit-hooks.d/50-pi-deploy-route-metrics <<'EOF'
+# Managed by pi-deploy (scripts/network-interfaces.sh).
+#
+# SOURCED by /sbin/dhclient-script (`. $script`), not executed: use `return`,
+# never `exit`, or dhclient-script terminates here and skips everything after.
+# No shebang and mode 644 to match the other hooks in this directory.
+case "$reason" in
+    BOUND|RENEW|REBIND|REBOOT)
+        if [ -x /usr/local/sbin/pi-deploy-route-metrics ]; then
+            /usr/local/sbin/pi-deploy-route-metrics || true
+        fi
+        ;;
+esac
+# dhclient-script logs a daemon.err for any non-zero status a hook leaves
+# behind, and the case above falls through with whatever the last test set.
+true
+EOF
+chmod 644 /etc/dhcp/dhclient-exit-hooks.d/50-pi-deploy-route-metrics
 
 # ---------------------------------------------------------------------------
 # 3. ARP, for two interfaces in one subnet.

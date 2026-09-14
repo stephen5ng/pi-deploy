@@ -310,8 +310,18 @@ as an automatic fallback. Three parts, all idempotent:
   in the same `/24` and that is decided by the **subnet** route, which dhclient
   does not set. Preferring only the default route leaves cube traffic on WiFi
   while the wire idles — measured: `ip route get <cube>` chose `wlan0` until the
-  subnet metric was fixed. `/usr/local/sbin/pi-deploy-route-metrics`, run from
-  an `if-up.d` hook so it also fires on a DHCP renewal, applies that half.
+  subnet metric was fixed. `/usr/local/sbin/pi-deploy-route-metrics` applies
+  that half, installed in **two** places: an `if-up.d` hook for every `ifup`,
+  and an `/etc/dhcp/dhclient-exit-hooks.d` hook for lease changes. `if-up.d` is
+  run by `ifup` and **not** by dhclient — `/sbin/dhclient-script` handles
+  `RENEW`/`REBIND` itself and calls the exit-hooks directory instead. Without
+  the second hook, a lease that returns a *different* address makes
+  dhclient-script `ip -4 addr flush` and re-add, destroying the metric route
+  and leaving the kernel's fresh metric-0 one, so the wired preference
+  silently reverts until the next `ifup`. The ordinary renewal, where the
+  address is unchanged, takes an `ip addr change` path that leaves routes
+  alone — which is why this is easy to miss. Note the exit hook is *sourced*
+  by dhclient-script, so it must use `return`, never `exit`.
 
   That hook **deletes before it adds**, and must. The kernel creates a metric-0
   route for the prefix automatically whenever an address is assigned, on both

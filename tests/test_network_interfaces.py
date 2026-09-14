@@ -281,6 +281,46 @@ class ScriptWiringTests(unittest.TestCase):
         self.assertIn("apply eth0 $WIRED_METRIC", commands)
         self.assertIn("apply wlan0 $WIRELESS_METRIC", commands)
 
+    def dhclient_exit_hook(self) -> str:
+        match = re.search(
+            r"cat > (/etc/dhcp/dhclient-exit-hooks\.d/\S+) <<'EOF'\n(.*?)\nEOF\n",
+            SCRIPT.read_text(), re.S,
+        )
+        assert match, "no dhclient exit hook is installed"
+        self.hook_path = match.group(1)
+        return match.group(2)
+
+    def test_the_metric_is_reapplied_after_a_dhcp_lease_change(self):
+        """if-up.d is run by ifup and NOT by dhclient.
+
+        /sbin/dhclient-script handles RENEW and REBIND itself and calls
+        /etc/dhcp/dhclient-exit-hooks.d; the string "if-up.d" does not appear
+        in it at all. On the path where a lease returns a different address it
+        runs `ip -4 addr flush dev $interface label $interface` and re-adds,
+        which destroys the metric route and leaves the kernel's fresh metric-0
+        one -- so the wired preference silently reverts until the next ifup.
+        """
+        hook = self.dhclient_exit_hook()
+        self.assertIn("pi-deploy-route-metrics", hook)
+        for reason in ("BOUND", "RENEW", "REBIND", "REBOOT"):
+            self.assertIn(reason, hook)
+
+    def test_the_exit_hook_never_calls_exit(self):
+        """dhclient-script SOURCES these (`. $script`). An `exit` would end
+        dhclient-script itself, skipping every hook after this one -- on this
+        rig that includes resolved, timesyncd and rfc3442-classless-routes."""
+        commands = "\n".join(
+            line for line in self.dhclient_exit_hook().splitlines()
+            if not line.strip().startswith("#")
+        )
+        self.assertNotRegex(commands, r"(?m)^\s*exit\b")
+
+    def test_the_exit_hook_name_survives_run_parts(self):
+        """run-parts ignores filenames containing a dot, so a `.sh` suffix
+        would install a hook that silently never runs."""
+        self.dhclient_exit_hook()
+        self.assertNotIn(".", Path(self.hook_path).name)
+
     def test_arp_is_scoped_to_the_owning_interface(self):
         text = SCRIPT.read_text()
         self.assertIn("net.ipv4.conf.all.arp_ignore = 1", text)
