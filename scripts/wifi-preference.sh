@@ -42,6 +42,8 @@ fi
 
 echo "=== WiFi preference: $PREFERRED_SSID ==="
 
+status=0
+{
 python3 - "$SUPPLICANT" "$PREFERRED_SSID" "$PREFERRED_PRIORITY" "$OTHER_PRIORITY" <<'PY'
 import re
 import sys
@@ -97,6 +99,72 @@ for ssid in seen:
     mark = "preferred" if ssid == preferred else "fallback"
     print(f"  {ssid}: {mark}")
 print(f"  {changed} block(s) updated")
+
+# 10 means "the file changed". The caller reloads wpa_supplicant only then:
+# reloading unconditionally would bounce WiFi on every bootstrap, and on a
+# WiFi-only rig that is the path bootstrap is running over.
+sys.exit(10 if changed else 0)
 PY
+} || status=$?
+
+if (( status != 0 && status != 10 )); then
+    exit "$status"
+fi
+
+if (( status == 0 )); then
+    echo "=== WiFi preference already applied ==="
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# The file is only half of it. A running wpa_supplicant holds its network
+# configuration in memory and never re-reads the file on its own, so without
+# this an existing Pi prints "applied" and stays on the other band until it
+# happens to reboot. Only reached when the file actually changed.
+# ---------------------------------------------------------------------------
+WPA_CLI=$(command -v wpa_cli || echo /sbin/wpa_cli)
+if [[ ! -x "$WPA_CLI" ]]; then
+    echo "  WARNING: wpa_cli not found; the new priorities apply at next reboot" >&2
+    exit 0
+fi
+
+managed=""
+for wireless in /sys/class/net/*/wireless; do
+    [[ -e "$wireless" ]] || continue
+    iface=$(basename "$(dirname "$wireless")")
+    # Only interfaces wpa_supplicant is actually driving answer a ping, so this
+    # skips an AP-mode or unmanaged radio without having to guess names.
+    "$WPA_CLI" -i "$iface" ping >/dev/null 2>&1 || continue
+    managed="$managed $iface"
+    if "$WPA_CLI" -i "$iface" reconfigure >/dev/null 2>&1; then
+        echo "  reloaded wpa_supplicant on $iface"
+    else
+        echo "  WARNING: could not reload wpa_supplicant on $iface" >&2
+    fi
+done
+
+if [[ -z "$managed" ]]; then
+    echo "  no wpa_supplicant-managed interface; priorities apply at next boot"
+    exit 0
+fi
+
+# Verify rather than assume. Re-association takes a moment, and it may not
+# happen at all -- the preferred network can simply be out of range here, which
+# is a note and not a failure.
+for iface in $managed; do
+    current=""
+    for _ in $(seq 1 15); do
+        current=$("$WPA_CLI" -i "$iface" status 2>/dev/null | sed -n 's/^ssid=//p')
+        [[ "$current" == "$PREFERRED_SSID" ]] && break
+        sleep 1
+    done
+    if [[ "$current" == "$PREFERRED_SSID" ]]; then
+        echo "  $iface: associated to $current"
+    else
+        echo "  $iface: on '${current:-nothing}', not $PREFERRED_SSID -- expected"
+        echo "          if that network is out of range here; it will be"
+        echo "          preferred whenever both are available"
+    fi
+done
 
 echo "=== WiFi preference applied ==="

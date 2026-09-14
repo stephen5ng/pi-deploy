@@ -396,6 +396,13 @@ explicitly in `apps.yaml` rather than inferred:
   `psk` and **no priority at all**. Without it wpa_supplicant chooses on signal
   strength, which at range means 2.4GHz — the band the cubes cannot leave and
   every watt of Pi traffic on it is airtime taken from them.
+  The script then **reloads the running daemon** (`wpa_cli reconfigure`) and
+  verifies the association, because wpa_supplicant keeps its network
+  configuration in memory and never re-reads the file on its own — without
+  that it reports success while the Pi stays on the other band until it
+  happens to reboot. It reloads only when the file actually changed: doing it
+  unconditionally would drop the association on every bootstrap, and on a
+  WiFi-only rig that is the path bootstrap is running over.
 - **`dependencies[].secret_file.ssid`** — the network compiled into cube
   firmware. The generator otherwise takes the **lowest-numbered configured
   entry**, which is a guess: a 5GHz SSID at entry 0 produces cubes that flash

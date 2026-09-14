@@ -8,7 +8,9 @@ never associate, with nothing on the Pi to say why.
 The shell script only edits a file, so it is exercised for real on fixtures.
 """
 
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -55,22 +57,60 @@ def priorities(text):
     return result
 
 
-class PreferenceTests(unittest.TestCase):
-    def apply(self, supplicant, preferred):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "wpa_supplicant.conf"
-            path.write_text(supplicant)
-            body = SCRIPT.read_text()
-            body = body.replace(
-                "SUPPLICANT=/etc/wpa_supplicant/wpa_supplicant.conf",
-                f"SUPPLICANT={path}",
-            )
-            subprocess.run(
-                ["bash", "-s", preferred], input=body, text=True,
-                check=True, capture_output=True,
-            )
-            return path.read_text()
+class Harness:
+    def invoke(self, supplicant, preferred, *, wpa_cli=True):
+        """Run the script against a fixture. Returns (file text, stdout).
 
+        wpa_cli is stubbed rather than absent, so the reload path runs without
+        needing a radio: the stub records every invocation to a log.
+        """
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        tmp = Path(tmp)
+        path = tmp / "wpa_supplicant.conf"
+        path.write_text(supplicant)
+        self.calls = tmp / "wpa_cli.log"
+
+        bin_dir = tmp / "bin"
+        bin_dir.mkdir()
+        if wpa_cli:
+            stub = bin_dir / "wpa_cli"
+            stub.write_text(
+                "#!/bin/sh\n"
+                f'echo "$@" >> {self.calls}\n'
+                'case "$*" in\n'
+                '  *status*) echo "ssid=$(cat %s)" ;;\n'
+                'esac\n'
+                "exit 0\n" % (tmp / "current"),
+            )
+            stub.chmod(0o755)
+        # The stub reports whatever the script last asked to prefer, so the
+        # verification loop terminates on the first poll.
+        (tmp / "current").write_text(preferred)
+        # One fake wireless interface for the discovery loop.
+        sysnet = tmp / "sys" / "class" / "net" / "wlan0" / "wireless"
+        sysnet.mkdir(parents=True)
+
+        body = SCRIPT.read_text()
+        body = body.replace(
+            "SUPPLICANT=/etc/wpa_supplicant/wpa_supplicant.conf",
+            f"SUPPLICANT={path}",
+        ).replace("/sys/class/net/*/wireless", f"{tmp}/sys/class/net/*/wireless")
+
+        env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+        done = subprocess.run(
+            ["bash", "-s", preferred], input=body, text=True,
+            check=True, capture_output=True, env=env,
+        )
+        return path.read_text(), done.stdout
+
+    def apply(self, supplicant, preferred):
+        return self.invoke(supplicant, preferred)[0]
+
+    def wpa_cli_calls(self):
+        return self.calls.read_text() if self.calls.exists() else ""
+
+class PreferenceTests(Harness, unittest.TestCase):
     def test_the_preferred_network_outranks_the_other(self):
         result = self.apply(DIETPI_SUPPLICANT, "FunAcross-5G")
         found = priorities(result)
@@ -109,6 +149,46 @@ class PreferenceTests(unittest.TestCase):
 
     def test_no_preference_configured_is_a_no_op(self):
         self.assertEqual(self.apply(DIETPI_SUPPLICANT, ""), DIETPI_SUPPLICANT)
+
+
+class ReloadTests(Harness, unittest.TestCase):
+    """Writing the file is only half of it.
+
+    A running wpa_supplicant keeps its network configuration in memory and
+    never re-reads the file on its own, so without a reload the script prints
+    "applied" while the Pi stays on the other band until it happens to reboot.
+    """
+
+    def test_a_change_reloads_the_running_daemon(self):
+        _, out = self.invoke(DIETPI_SUPPLICANT, "FunAcross-5G")
+        self.assertIn("reconfigure", self.wpa_cli_calls())
+        self.assertIn("reloaded wpa_supplicant on wlan0", out)
+
+    def test_no_change_does_not_bounce_wifi(self):
+        """Reloading on every bootstrap would drop the association each time --
+        and on a WiFi-only rig that is the path bootstrap is running over."""
+        already, _ = self.invoke(DIETPI_SUPPLICANT, "FunAcross-5G")
+        _, out = self.invoke(already, "FunAcross-5G")
+        self.assertNotIn("reconfigure", self.wpa_cli_calls())
+        self.assertIn("already applied", out)
+
+    def test_the_association_is_verified_not_assumed(self):
+        _, out = self.invoke(DIETPI_SUPPLICANT, "FunAcross-5G")
+        self.assertIn("associated to FunAcross-5G", out)
+
+    def test_it_degrades_rather_than_failing_the_bootstrap(self):
+        """Two things can be absent -- wpa_cli itself, or any interface it is
+        driving -- and neither may abort bootstrap. `set -e` plus a bare
+        `wpa_cli` call would do exactly that. The priorities are still on disk
+        and take effect at the next boot either way.
+
+        Which of the two branches fires depends on the host, so this asserts
+        the outcome rather than the wording: it exits cleanly and says the
+        change is deferred.
+        """
+        _, out = self.invoke(DIETPI_SUPPLICANT, "FunAcross-5G", wpa_cli=False)
+        self.assertRegex(out, r"next (boot|reboot)")
+        self.assertNotIn("reconfigure", self.wpa_cli_calls())
 
 
 class WiringTests(unittest.TestCase):
