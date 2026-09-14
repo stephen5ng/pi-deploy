@@ -299,6 +299,7 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     after=$(yq -r ".apps[$app_idx].after // \"network.target\"" "$CONFIG")
     service_address=$(yq -r ".apps[$app_idx].service_address.address // empty" "$CONFIG")
     service_address_interface=$(yq -r ".apps[$app_idx].service_address.interface // \"auto\"" "$CONFIG")
+    service_address_failover=$(yq -r ".apps[$app_idx].service_address.failover // false" "$CONFIG")
     exclusive_group=$(yq -r ".apps[$app_idx].exclusive_group // empty" "$CONFIG")
     bound_to=$(yq -r ".apps[$app_idx].bound_to // empty" "$CONFIG")
     unit_source=$(yq -r ".apps[$app_idx].unit_source // empty" "$CONFIG")
@@ -677,9 +678,45 @@ fi
 exit 0
 EOF
         chmod 755 "$address_hook"
+
+        # The hook above only fires on ifup, and only when the address is
+        # missing everywhere. Losing carrier is neither, so a dead cable leaves
+        # the address stranded on a NO-CARRIER interface with every client of
+        # that address offline. The watcher re-homes it; see
+        # scripts/service-address-failover.sh for why it fails over but not back.
+        failover_service="${name}-address-failover.service"
+        if [[ "$service_address_failover" == "true" ]]; then
+            failover_helper="/usr/local/sbin/service-address-failover"
+            install -m 755 "$SCRIPT_DIR/scripts/service-address-failover.sh" "$failover_helper"
+            cat > "/etc/systemd/system/$failover_service" <<EOF
+[Unit]
+Description=$name service address failover
+After=$address_service
+BindsTo=$address_service
+
+[Service]
+ExecStart=$failover_helper $service_address $address_service
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=$address_service
+EOF
+            chmod 644 "/etc/systemd/system/$failover_service"
+            systemctl daemon-reload
+            systemctl enable "$failover_service" >/dev/null 2>&1 || true
+            systemctl restart "$failover_service" || true
+            echo "  Service address failover watcher enabled for $name"
+        else
+            systemctl disable --now "$failover_service" >/dev/null 2>&1 || true
+            rm -f "/etc/systemd/system/$failover_service"
+        fi
     else
         rm -f "/etc/network/if-up.d/50-${name}-address"
         rm -f "/usr/local/sbin/${name}-address-reclaim"
+        systemctl disable --now "${name}-address-failover.service" >/dev/null 2>&1 || true
+        rm -f "/etc/systemd/system/${name}-address-failover.service"
     fi
 
     env_lines=""

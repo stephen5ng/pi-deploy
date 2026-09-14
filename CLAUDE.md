@@ -224,6 +224,28 @@ already in use by another host. Legacy hosts where the service address is still
 the primary static address must be migrated to DHCP administratively before
 deployment.
 
+`service_address.failover: true` additionally installs
+`<app>-address-failover.service`, which watches the interface holding the
+address and re-homes it when that interface loses carrier. This is not covered
+by the `if-up.d` hook: that hook fires on `ifup` and only when the address is
+missing from *every* interface, whereas losing carrier is neither. Without it a
+pulled cable leaves the address advertised on a `NO-CARRIER` interface while the
+box is still perfectly reachable elsewhere — for lexacube that means all six
+cubes offline, because they hardcode `.247`. The watcher does not pick an
+interface itself; it hands the address back to `service-address ... auto`, which
+resolves one with `ip route get`. If that re-claim fails — no alternate path is
+up yet, or `arping` trips transiently — the address is left configured nowhere,
+so the watcher remembers it owes the address a home and keeps retrying. Nothing
+else would: losing carrier fires no `ifup`, so the reclaim hook never runs. It
+retries only an address it released itself; one that was simply never claimed
+belongs to the hook, and racing it would be worse. That works because `scripts/reliability.sh`
+sets `ignore_routes_with_linkdown`, so routing already skips link-down
+interfaces — the two are a pair, and the watcher is a no-op without it.
+
+It fails over but deliberately does **not** fail back: when the cable returns
+the address stays put until the app restarts. Chasing the "best" interface would
+flap the address, and every move drops all MQTT sessions.
+
 Apps may declare `extra_units` — sibling unit files shipped in the app repo,
 installed to `/etc/systemd/system` regardless of whether the app's main unit
 is generated or repo-owned (`unit_source`). A plain string entry is installed
