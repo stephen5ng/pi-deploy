@@ -297,6 +297,39 @@ additive: bootstrap never disables services installed by an earlier run, and
 an unknown app name or incomplete `requires` selection fails before system
 configuration begins.
 
+### Wired-Preferred Networking
+
+`scripts/network-interfaces.sh` makes the wire the primary path and leaves WiFi
+as an automatic fallback. Three parts, all idempotent:
+
+- **`eth0` is brought up at boot.** DietPi ships `#allow-hotplug eth0`
+  commented out, so ifupdown never touched it: a plugged cable did nothing and
+  the interface sat `DOWN` while the Pi talked over WiFi.
+- **Both route metrics, not one.** `dhclient` honours `metric` for the *default*
+  route (`IF_METRIC`, see `/sbin/dhclient-script`), but the cubes are *on-link*
+  in the same `/24` and that is decided by the **subnet** route, which dhclient
+  does not set. Preferring only the default route leaves cube traffic on WiFi
+  while the wire idles — measured: `ip route get <cube>` chose `wlan0` until the
+  subnet metric was fixed. `/usr/local/sbin/pi-deploy-route-metrics`, run from
+  an `if-up.d` hook so it also fires on a DHCP renewal, applies that half.
+- **ARP scoped to the owning interface.** Both interfaces hold an address in one
+  subnet, and Linux answers ARP for any local address on any interface, so
+  `wlan0` would answer for a service address living on `eth0`.
+
+The stanzas are rewritten in the main `interfaces` file rather than dropped into
+`interfaces.d/`: the stanzas already exist there and ifupdown rejects a
+duplicate `iface`, so a drop-in would break networking rather than override it.
+The original is backed up to `interfaces.before-pi-deploy.<timestamp>`.
+
+This pairs with `ignore_routes_with_linkdown` from `reliability.sh` — metrics
+decide preference, that sysctl is what makes the switch happen when a cable
+dies — so bootstrap runs this script first.
+
+Why it is worth doing at all: every cube message crosses the air twice
+(`cube -> AP -> Pi`). Wiring the Pi removes one of the two wireless hops for
+every message in both directions, and takes the Pi's own traffic off the 2.4GHz
+band the single-band ESP32 cubes cannot leave.
+
 ### Idempotency
 
 The bootstrap script can be run multiple times safely:

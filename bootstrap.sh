@@ -1134,6 +1134,18 @@ fi
 # RELIABILITY & OBSERVABILITY (watchdog, zram swap, persistent journal,
 # health logger). Idempotent; see scripts/reliability.sh.
 # ============================================================================
+# Wired-preferred networking. Ordered BEFORE the hardening below because the
+# route metrics it sets are only half the story: reliability.sh's
+# ignore_routes_with_linkdown is what makes the fallback automatic when a cable
+# dies, and applying the metrics first means a single bootstrap run leaves a
+# coherent configuration rather than one that needs a second pass.
+if [[ -f "$SCRIPT_DIR/scripts/network-interfaces.sh" ]]; then
+    echo "Configuring wired-preferred networking..."
+    bash "$SCRIPT_DIR/scripts/network-interfaces.sh"
+else
+    echo "  Warning: scripts/network-interfaces.sh not found, skipping"
+fi
+
 if [[ -f "$SCRIPT_DIR/scripts/reliability.sh" ]]; then
     echo "Applying reliability & observability hardening..."
     bash "$SCRIPT_DIR/scripts/reliability.sh"
