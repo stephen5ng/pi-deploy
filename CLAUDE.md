@@ -326,6 +326,63 @@ additive: bootstrap never disables services installed by an earlier run, and
 an unknown app name or incomplete `requires` selection fails before system
 configuration begins.
 
+### Wired-Preferred Networking
+
+`scripts/network-interfaces.sh` makes the wire the primary path and leaves WiFi
+as an automatic fallback. Three parts, all idempotent:
+
+- **`eth0` is brought up at boot.** DietPi ships `#allow-hotplug eth0`
+  commented out, so ifupdown never touched it: a plugged cable did nothing and
+  the interface sat `DOWN` while the Pi talked over WiFi.
+- **Both route metrics, not one.** `dhclient` honours `metric` for the *default*
+  route (`IF_METRIC`, see `/sbin/dhclient-script`), but the cubes are *on-link*
+  in the same `/24` and that is decided by the **subnet** route, which dhclient
+  does not set. Preferring only the default route leaves cube traffic on WiFi
+  while the wire idles — measured: `ip route get <cube>` chose `wlan0` until the
+  subnet metric was fixed. `/usr/local/sbin/pi-deploy-route-metrics` applies
+  that half, installed in **two** places: an `if-up.d` hook for every `ifup`,
+  and an `/etc/dhcp/dhclient-exit-hooks.d` hook for lease changes. `if-up.d` is
+  run by `ifup` and **not** by dhclient — `/sbin/dhclient-script` handles
+  `RENEW`/`REBIND` itself and calls the exit-hooks directory instead. Without
+  the second hook, a lease that returns a *different* address makes
+  dhclient-script `ip -4 addr flush` and re-add, destroying the metric route
+  and leaving the kernel's fresh metric-0 one, so the wired preference
+  silently reverts until the next `ifup`. The ordinary renewal, where the
+  address is unchanged, takes an `ip addr change` path that leaves routes
+  alone — which is why this is easy to miss. Note the exit hook is *sourced*
+  by dhclient-script, so it must use `return`, never `exit`.
+
+  That hook **deletes before it adds**, and must. The kernel creates a metric-0
+  route for the prefix automatically whenever an address is assigned, on both
+  interfaces, and `ip route replace` cannot overwrite it with a different
+  metric — metric is part of the route key, so a replace *adds* a second route.
+  Measured after a reboot with the replace-based version: four routes for the
+  one prefix (kernel metric-0 on `eth0` **and** `wlan0`, plus 100 and 600), the
+  metric-0 pair outranking both of ours and tying with each other, so the
+  winner was boot insertion order rather than anything configured. It happened
+  to pick the wire; nothing made it. Nor can that route be removed on its own:
+  iproute2 treats an unspecified metric and an explicit `metric 0` alike as
+  "match any", so either form deletes whichever route is found first. Deleting
+  until none remain, then adding one at the intended metric, is the only
+  selective-enough operation available.
+- **ARP scoped to the owning interface.** Both interfaces hold an address in one
+  subnet, and Linux answers ARP for any local address on any interface, so
+  `wlan0` would answer for a service address living on `eth0`.
+
+The stanzas are rewritten in the main `interfaces` file rather than dropped into
+`interfaces.d/`: the stanzas already exist there and ifupdown rejects a
+duplicate `iface`, so a drop-in would break networking rather than override it.
+The original is backed up to `interfaces.before-pi-deploy.<timestamp>`.
+
+This pairs with `ignore_routes_with_linkdown` from `reliability.sh` — metrics
+decide preference, that sysctl is what makes the switch happen when a cable
+dies — so bootstrap runs this script first.
+
+Why it is worth doing at all: every cube message crosses the air twice
+(`cube -> AP -> Pi`). Wiring the Pi removes one of the two wireless hops for
+every message in both directions, and takes the Pi's own traffic off the 2.4GHz
+band the single-band ESP32 cubes cannot leave.
+
 ### Idempotency
 
 The bootstrap script can be run multiple times safely:
