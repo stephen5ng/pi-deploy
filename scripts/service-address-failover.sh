@@ -51,29 +51,58 @@ has_carrier() {
     [[ "$(cat "/sys/class/net/$iface/carrier" 2>/dev/null)" == "1" ]]
 }
 
+# Set once this watcher has released the address and still owes it a home. It
+# distinguishes the two ways the address can be missing, which look identical
+# from `ip address show`:
+#
+#   pending_rehome=0  it was never ours to place -- the address unit has not run
+#                     yet, or someone removed it. The ifup reclaim hook covers
+#                     that case; claiming it here would race that hook.
+#   pending_rehome=1  we took it off a dead interface and the re-claim has not
+#                     succeeded yet. Nothing else will put it back: losing
+#                     carrier fires no ifup, so the hook never runs. If we do
+#                     not keep trying, the address stays unconfigured
+#                     indefinitely -- precisely the outage this watcher exists
+#                     to prevent.
+pending_rehome=0
+
+rehome() {
+    if "$HELPER" start "$ADDRESS_WITH_PREFIX" auto; then
+        pending_rehome=0
+        log "$ADDRESS now on $(holder)"
+    else
+        pending_rehome=1
+        log "no usable interface for $ADDRESS yet; will retry in ${INTERVAL}s"
+    fi
+}
+
 log "watching $ADDRESS_WITH_PREFIX (owner $OWNER_UNIT, every ${INTERVAL}s)"
 
 while sleep "$INTERVAL"; do
     # Only act while the owning unit still claims the address. A stopped app
-    # must not have its address resurrected on another interface.
-    systemctl is-active --quiet "$OWNER_UNIT" || continue
+    # must not have its address resurrected on another interface, and its
+    # ExecStop removing the address is not a re-home we owe.
+    if ! systemctl is-active --quiet "$OWNER_UNIT"; then
+        pending_rehome=0
+        continue
+    fi
 
     current=$(holder)
-    [[ -n "$current" ]] || continue          # not configured; the ifup hook covers that
+
+    if [[ -z "$current" ]]; then
+        (( pending_rehome )) && rehome
+        continue
+    fi
+
     has_carrier "$current" && continue       # still fine
 
     log "$current lost carrier while holding $ADDRESS; re-homing"
 
     if ! "$HELPER" stop "$ADDRESS_WITH_PREFIX" auto; then
-        log "could not release $ADDRESS from $current; will retry"
+        log "could not release $ADDRESS from $current; will retry in ${INTERVAL}s"
         continue
     fi
 
-    if "$HELPER" start "$ADDRESS_WITH_PREFIX" auto; then
-        log "$ADDRESS now on $(holder)"
-    else
-        # Leaving it unconfigured is safe: the owning unit is still active, so
-        # the next ifup fires the reclaim hook, and this loop retries anyway.
-        log "no usable interface for $ADDRESS yet; will retry"
-    fi
+    pending_rehome=1                         # the address is ours to place now
+    rehome
 done

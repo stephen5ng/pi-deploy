@@ -226,7 +226,12 @@ pulled cable leaves the address advertised on a `NO-CARRIER` interface while the
 box is still perfectly reachable elsewhere — for lexacube that means all six
 cubes offline, because they hardcode `.247`. The watcher does not pick an
 interface itself; it hands the address back to `service-address ... auto`, which
-resolves one with `ip route get`. That works because `scripts/reliability.sh`
+resolves one with `ip route get`. If that re-claim fails — no alternate path is
+up yet, or `arping` trips transiently — the address is left configured nowhere,
+so the watcher remembers it owes the address a home and keeps retrying. Nothing
+else would: losing carrier fires no `ifup`, so the reclaim hook never runs. It
+retries only an address it released itself; one that was simply never claimed
+belongs to the hook, and racing it would be worse. That works because `scripts/reliability.sh`
 sets `ignore_routes_with_linkdown`, so routing already skips link-down
 interfaces — the two are a pair, and the watcher is a no-op without it.
 
