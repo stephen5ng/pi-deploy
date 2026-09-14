@@ -643,14 +643,14 @@ $address_helper start $service_address $service_address_interface
 EOF
         chmod 755 "$reclaim_helper"
 
-        address_hook="/etc/network/if-up.d/50-${name}-address"
-        cat > "$address_hook" <<EOF
+        # The decision -- "does this event mean the address needs reclaiming?"
+        # -- lives here once, because two different subsystems have to ask it
+        # and neither covers the other. See the two hooks below.
+        guard_helper="/usr/local/sbin/${name}-address-reclaim-if-missing"
+        cat > "$guard_helper" <<EOF
 #!/bin/sh
-# Managed by pi-deploy: re-claim $service_address for $name after ifup.
-
-if [ "\$IFACE" = "lo" ]; then
-    exit 0
-fi
+# Managed by pi-deploy: reclaim $service_address for $name if it has gone
+# missing. Called from both the ifup hook and the dhclient exit hook.
 
 # Reclaim only while $name still owns the address; a stopped service must not
 # have it handed back by an unrelated interface event.
@@ -666,7 +666,8 @@ fi
 
 # Re-add through the reclaim helper rather than restarting $address_service:
 # $name.service has Requires= on it, so a restart stops and restarts the app.
-# Detached because the arping probe can take ~20s and ifup must not block on it.
+# Detached because the arping probe can take ~20s and the caller -- ifup, or
+# dhclient-script mid-lease -- must not block on it.
 if command -v systemd-run >/dev/null 2>&1; then
     systemd-run --collect --unit=${name}-address-reclaim \\
         --property=BindsTo=$address_service \\
@@ -677,7 +678,57 @@ else
 fi
 exit 0
 EOF
+        chmod 755 "$guard_helper"
+
+        address_hook="/etc/network/if-up.d/50-${name}-address"
+        cat > "$address_hook" <<EOF
+#!/bin/sh
+# Managed by pi-deploy: re-claim $service_address for $name after ifup.
+[ "\$IFACE" = "lo" ] && exit 0
+$guard_helper
+exit 0
+EOF
         chmod 755 "$address_hook"
+
+        # ...and again from dhclient, which is a separate path entirely.
+        #
+        # /etc/network/if-up.d is run by ifup. It is NOT run by dhclient:
+        # /sbin/dhclient-script handles RENEW and REBIND itself and calls
+        # /etc/dhcp/dhclient-exit-hooks.d instead. So a lease that comes back
+        # with a different address runs
+        #
+        #     ip -4 addr flush dev \$interface label \$interface
+        #
+        # and that label is not as narrow as it reads -- a secondary service
+        # address on the same interface carries the interface's own label, so
+        # the flush takes it too. Measured on the rig: eth0 was left with no
+        # addresses at all. Nothing then restores it. The ifup hook does not
+        # run (no ifup happened) and the failover watcher does not fire (the
+        # carrier never dropped), so the address is simply gone while
+        # systemctl still reports $address_service active -- every client of
+        # that address offline, with nothing saying so.
+        addr_dhclient_hook="/etc/dhcp/dhclient-exit-hooks.d/50-${name}-address"
+        mkdir -p /etc/dhcp/dhclient-exit-hooks.d
+        cat > "$addr_dhclient_hook" <<EOF
+# Managed by pi-deploy: re-claim $service_address for $name after a DHCP
+# lease change, which can flush it off the interface.
+#
+# SOURCED by /sbin/dhclient-script (\`. \$script\`), not executed: use \`return\`,
+# never \`exit\`, or dhclient-script stops here and skips every later hook. No
+# shebang and mode 644 to match the directory's other hooks, and no dot in the
+# filename because run-parts skips those.
+case "\$reason" in
+    BOUND|RENEW|REBIND|REBOOT)
+        if [ -x $guard_helper ]; then
+            $guard_helper || true
+        fi
+        ;;
+esac
+# dhclient-script logs a daemon.err for any non-zero status a hook leaves
+# behind, and the case above falls through with whatever the last test set.
+true
+EOF
+        chmod 644 "$addr_dhclient_hook"
 
         # The hook above only fires on ifup, and only when the address is
         # missing everywhere. Losing carrier is neither, so a dead cable leaves
@@ -714,7 +765,9 @@ EOF
         fi
     else
         rm -f "/etc/network/if-up.d/50-${name}-address"
+        rm -f "/etc/dhcp/dhclient-exit-hooks.d/50-${name}-address"
         rm -f "/usr/local/sbin/${name}-address-reclaim"
+        rm -f "/usr/local/sbin/${name}-address-reclaim-if-missing"
         systemctl disable --now "${name}-address-failover.service" >/dev/null 2>&1 || true
         rm -f "/etc/systemd/system/${name}-address-failover.service"
     fi
