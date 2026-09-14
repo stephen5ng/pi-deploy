@@ -113,12 +113,19 @@ When modifying application configuration:
   for administration
 - `/etc/network/if-up.d/50-lexacube-address` re-claims that address after any
   `ifup`. `ifdown` flushes every address on the interface and the oneshot unit
-  never runs again, so without the hook a WiFi reconnect (DietPi's WiFi monitor
-  runs `ifdown`/`ifup` on connection loss) silently strips `.247` while systemd
-  still reports the unit active. Every cube hardcodes `.247`, so they all drop
-  offline at once. The hook re-adds the address through `service-address`
-  directly rather than restarting the unit, because `lexacube.service` has
-  `Requires=` on it and a restart would bounce the running game
+  never runs again, so without the hook any interface bounce silently strips
+  `.247` while systemd still reports the unit active. Every cube hardcodes
+  `.247`, so they all drop offline at once. The hook re-adds the address through
+  `service-address` directly rather than restarting the unit, because
+  `lexacube.service` has `Requires=` on it and a restart would bounce the
+  running game.
+  DietPi's WiFi monitor used to be the main source of those bounces —
+  `scripts/reliability.sh` now masks it (see there for why) — but the hook is
+  still required: any `ifup`, from a manual `ifdown`/`ifup` to a DHCP-driven
+  reconfiguration, has the same effect. Note also what the hook does *not*
+  cover: it re-adds `.247` only when the address is missing from every
+  interface, and losing carrier is not an `ifup` event, so a dead cable leaves
+  `.247` stranded on a NO-CARRIER interface with the cubes offline
 - Depends on: rpi-rgb-led-matrix library for LED control
 - Uses: Python venv at `/opt/lexacube/cube_env`
 - Output: Written to `/opt/lexacube/output/` (owned by daemon user)
