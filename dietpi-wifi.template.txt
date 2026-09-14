@@ -1,4 +1,29 @@
 #---------------------------------------------------------------
+# pi-deploy notes
+#
+# Configure BOTH bands here when the rig has them, because two different
+# consumers read this file and they need different networks:
+#
+#   * The Pi itself, which should sit on 5GHz. apps.yaml `wifi.preferred_ssid`
+#     names it, and scripts/wifi-preference.sh writes the `priority=` that
+#     DietPi's own generator does not.
+#   * The ESP32 cubes, which are 2.4GHz ONLY. apps.yaml
+#     `secret_file.ssid` names that network, and bootstrap compiles it into
+#     the firmware. Naming it matters: the generator otherwise takes the
+#     lowest-numbered configured entry, so a 5GHz SSID at entry 0 would
+#     produce cubes that flash fine and can never associate.
+#
+# Entry order carries no meaning once both are named. Put the plaintext
+# passphrase in aWIFI_KEY -- DietPi runs `wpa_passphrase "$ssid" "$key"` per
+# entry, and psk is PBKDF2(passphrase, SSID), so the same password hashes
+# differently for each network. Pre-hashing one and copying it to the other
+# yields a network that will not authenticate.
+#
+# This rig, for reference:
+#   Entry 0  FunAcross      2.4GHz  <- cubes (secret_file.ssid)
+#   Entry 1  FunAcross-5G   5GHz    <- Pi    (wifi.preferred_ssid)
+#---------------------------------------------------------------
+#---------------------------------------------------------------
 # Entry 0
 # - WiFi SSID: required, case sensitive
 aWIFI_SSID[0]=''

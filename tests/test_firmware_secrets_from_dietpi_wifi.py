@@ -87,5 +87,60 @@ class FirmwareSecretsTests(unittest.TestCase):
             self.assertEqual(list(root.glob(".secrets.h.*")), [])
 
 
+class NamedSsidTests(unittest.TestCase):
+    """Which network the cubes are told to join.
+
+    The ESP32 is 2.4GHz only and the Pi is dual-band, so "whichever entry comes
+    first" is a guess that can compile an SSID the cubes physically cannot
+    join. The failure is cubes that flash fine and never associate, with
+    nothing on the Pi to say why.
+    """
+
+    DUAL_BAND = (
+        "aWIFI_SSID[0]='FunAcross-5G'\n"
+        "aWIFI_KEY[0]='fivekey'\n"
+        "aWIFI_SSID[1]='FunAcross'\n"
+        "aWIFI_KEY[1]='twokey'\n"
+    )
+
+    def profile(self, tmp, text):
+        path = Path(tmp) / "dietpi-wifi.txt"
+        path.write_text(text)
+        return path
+
+    def test_the_named_network_wins_over_entry_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.profile(tmp, self.DUAL_BAND)
+            ssid, key, _ = firmware_secrets.find_wifi_profile([path], "FunAcross")
+            self.assertEqual((ssid, key), ("FunAcross", "twokey"))
+
+    def test_without_a_name_the_first_entry_wins(self):
+        """Documented, not endorsed: this is the behaviour that motivated
+        naming the SSID, kept so an unconfigured rig still works."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.profile(tmp, self.DUAL_BAND)
+            ssid, _, _ = firmware_secrets.find_wifi_profile([path])
+            self.assertEqual(ssid, "FunAcross-5G")
+
+    def test_a_missing_named_network_fails_loudly(self):
+        """Rather than silently falling back to some other network, which is
+        how a wrong SSID reaches the firmware unnoticed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.profile(tmp, self.DUAL_BAND)
+            with self.assertRaises(RuntimeError) as caught:
+                firmware_secrets.find_wifi_profile([path], "NotConfigured")
+            self.assertIn("NotConfigured", str(caught.exception))
+
+    def test_blank_entries_are_skipped_when_naming(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.profile(
+                tmp,
+                "aWIFI_SSID[0]=''\naWIFI_KEY[0]=''\n"
+                "aWIFI_SSID[1]='FunAcross'\naWIFI_KEY[1]='twokey'\n",
+            )
+            ssid, key, _ = firmware_secrets.find_wifi_profile([path], "FunAcross")
+            self.assertEqual((ssid, key), ("FunAcross", "twokey"))
+
+
 if __name__ == "__main__":
     unittest.main()
