@@ -1,3 +1,11 @@
+# The Pi prefers this network. DietPi's own generator writes no `priority=`
+# into wpa_supplicant.conf, so without scripts/wifi-preference.sh the band is
+# chosen by signal strength -- which at range means 2.4GHz, the band the
+# single-band cubes cannot leave and the Pi should stay off. Leave blank to
+# express no preference.
+wifi:
+  preferred_ssid: FunAcross-5G
+
 apps:
   - name: lexacube
     repo: "https://github.com/stephen5ng/cubes"
@@ -71,6 +79,13 @@ apps:
           source: /etc/lexacube-firmware-secrets.h
           destination: src/secrets.h
           generate: dietpi_wifi
+          # Named, not positional. The generator otherwise takes the
+          # lowest-numbered configured DietPi WiFi entry, and this Pi is
+          # dual-band while the ESP32 is 2.4GHz only -- so a 5GHz network
+          # sitting at entry 0 would compile an SSID the cubes physically
+          # cannot join. The failure is cubes that flash fine and then never
+          # associate, with nothing on the Pi to say why.
+          ssid: FunAcross
         install_python_cmd: "pip install platformio"
         # Pre-fetch the ESP32 platform, Xtensa toolchain and lib_deps declared in
         # the firmware's platformio.ini, so a freshly bootstrapped Pi can build

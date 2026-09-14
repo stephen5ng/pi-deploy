@@ -403,6 +403,46 @@ Why it is worth doing at all: every cube message crosses the air twice
 every message in both directions, and takes the Pi's own traffic off the 2.4GHz
 band the single-band ESP32 cubes cannot leave.
 
+### WiFi: two bands, two consumers
+
+The Pi is dual-band; the ESP32 cubes are **2.4GHz only**. One `dietpi-wifi.db`
+serves both, and each needs a different network out of it. Both are named
+explicitly in `apps.yaml` rather than inferred:
+
+- **`wifi.preferred_ssid`** — the network the Pi should use (5GHz here).
+  `scripts/wifi-preference.sh` writes `priority=` into each
+  `wpa_supplicant.conf` network block, because DietPi's own generator
+  (`/boot/dietpi/func/dietpi-wifidb`) emits `ssid`, `scan_ssid`, `key_mgmt` and
+  `psk` and **no priority at all**. Without it wpa_supplicant chooses on signal
+  strength, which at range means 2.4GHz — the band the cubes cannot leave and
+  every watt of Pi traffic on it is airtime taken from them.
+  The script then **reloads the running daemon** (`wpa_cli reconfigure`) and
+  verifies the association, because wpa_supplicant keeps its network
+  configuration in memory and never re-reads the file on its own — without
+  that it reports success while the Pi stays on the other band until it
+  happens to reboot. It reloads only when the file actually changed: doing it
+  unconditionally would drop the association on every bootstrap, and on a
+  WiFi-only rig that is the path bootstrap is running over.
+- **`dependencies[].secret_file.ssid`** — the network compiled into cube
+  firmware. The generator otherwise takes the **lowest-numbered configured
+  entry**, which is a guess: a 5GHz SSID at entry 0 produces cubes that flash
+  fine and can never associate, with nothing on the Pi to say why. A named SSID
+  that is not configured fails bootstrap loudly rather than silently falling
+  back to some other network.
+
+`psk` is **PBKDF2(passphrase, SSID)**, so the same password hashes differently
+per network — a psk copied from one SSID to another will not authenticate.
+Put the plaintext passphrase in `aWIFI_KEY` and let `dietpi-wifidb` derive each
+one (it runs `wpa_passphrase "$ssid" "$key"` per entry); a 64-hex value is
+passed through unchanged, so it must be the hash for *that* SSID.
+
+What this does **not** cover: DietPi rewrites `wpa_supplicant.conf` wholesale
+when its WiFi settings change (`dietpi-config`), dropping the priorities until
+the next bootstrap. The credentials survive, because they live in
+`dietpi-wifi.db` — which is the point. Previously the 5GHz network was
+hand-written into `wpa_supplicant.conf` only, so a regenerate removed it
+outright and a reflash never had it.
+
 ### Idempotency
 
 The bootstrap script can be run multiple times safely:
@@ -460,7 +500,9 @@ Anthropic needs no key — `use-anthropic.sh` just unsets the Z.ai overrides.
 
 These files are used during SD card preparation (before first boot):
 - Customize `dietpi.template.txt` and copy to `/boot/dietpi.txt` for unattended setup
-- Customize `dietpi-wifi.template.txt` and copy to `/boot/dietpi-wifi.txt` for WiFi
+- Customize `dietpi-wifi.template.txt` and copy to `/boot/dietpi-wifi.txt` for WiFi.
+  Configure **both** bands when the rig has them — see the notes at the top of
+  that file and "WiFi: two bands, two consumers" above
 - Customize `knockstrip.env.template.txt` and copy to `/boot/knockstrip.env` so the
   game's credentials survive a reflash
 - Must be placed on boot partition before powering on the Pi

@@ -348,6 +348,9 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
             dep_secret_source=$(yq -r ".apps[$app_idx].dependencies[$i].secret_file.source // empty" "$CONFIG")
             dep_secret_destination=$(yq -r ".apps[$app_idx].dependencies[$i].secret_file.destination // empty" "$CONFIG")
             dep_secret_generator=$(yq -r ".apps[$app_idx].dependencies[$i].secret_file.generate // empty" "$CONFIG")
+            # Which network the cubes are told to join. Named rather than
+            # positional; see the comment in apps.yaml.
+            dep_secret_ssid=$(yq -r ".apps[$app_idx].dependencies[$i].secret_file.ssid // empty" "$CONFIG")
 
             echo "  Dependency: $dep_repo -> $dep_path"
             git_clone_or_update "$dep_repo" "$dep_path"
@@ -370,8 +373,12 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
                 if [[ ! -f "$dep_secret_source" ]]; then
                     if [[ "$dep_secret_generator" == "dietpi_wifi" ]]; then
                         echo "    Generating firmware secrets from the DietPi WiFi profile..."
+                        firmware_ssid_args=()
+                        if [[ -n "$dep_secret_ssid" ]]; then
+                            firmware_ssid_args=(--ssid "$dep_secret_ssid")
+                        fi
                         python3 "$SCRIPT_DIR/scripts/firmware_secrets_from_dietpi_wifi.py" \
-                            --output "$dep_secret_source"
+                            --output "$dep_secret_source" "${firmware_ssid_args[@]}"
                     elif [[ -n "$dep_secret_generator" ]]; then
                         echo "Unknown secret file generator '$dep_secret_generator' for $dep_repo" >&2
                         exit 1
@@ -1197,6 +1204,18 @@ if [[ -f "$SCRIPT_DIR/scripts/network-interfaces.sh" ]]; then
     bash "$SCRIPT_DIR/scripts/network-interfaces.sh"
 else
     echo "  Warning: scripts/network-interfaces.sh not found, skipping"
+fi
+
+# DietPi's generator writes no `priority=` into wpa_supplicant.conf, so with two
+# networks configured the band is chosen by signal strength -- which at range
+# means 2.4GHz, the band the single-band ESP32 cubes cannot leave and the Pi
+# should stay off.
+if [[ -f "$SCRIPT_DIR/scripts/wifi-preference.sh" ]]; then
+    preferred_ssid=$(yq -r '.wifi.preferred_ssid // empty' "$CONFIG")
+    echo "Configuring WiFi preference..."
+    bash "$SCRIPT_DIR/scripts/wifi-preference.sh" "$preferred_ssid"
+else
+    echo "  Warning: scripts/wifi-preference.sh not found, skipping"
 fi
 
 if [[ -f "$SCRIPT_DIR/scripts/reliability.sh" ]]; then

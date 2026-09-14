@@ -28,8 +28,14 @@ def decode_shell_value(value: str) -> str:
     return fields[0]
 
 
-def read_wifi_profile(path: Path) -> tuple[str, str] | None:
-    """Return the first configured SSID and key from one DietPi profile file."""
+def read_wifi_profile(path: Path, wanted_ssid: str | None = None) -> tuple[str, str] | None:
+    """Return one configured SSID and key from a DietPi profile file.
+
+    With `wanted_ssid`, returns that network specifically. Without it, returns
+    the lowest-numbered configured entry, which is a guess: the Pi is dual-band
+    and the ESP32 is 2.4GHz only, so whichever network happens to sit at entry
+    0 may be one the cubes physically cannot join. Name the SSID instead.
+    """
     profiles: dict[int, dict[str, str]] = {}
 
     for line_number, line in enumerate(
@@ -48,18 +54,35 @@ def read_wifi_profile(path: Path) -> tuple[str, str] | None:
 
     for index in sorted(profiles):
         profile = profiles[index]
-        if profile.get("SSID") and "KEY" in profile:
-            return profile["SSID"], profile["KEY"]
+        if not profile.get("SSID") or "KEY" not in profile:
+            continue
+        if wanted_ssid is not None and profile["SSID"] != wanted_ssid:
+            continue
+        return profile["SSID"], profile["KEY"]
     return None
 
 
-def find_wifi_profile(paths: Iterable[Path]) -> tuple[str, str, Path]:
+def find_wifi_profile(
+    paths: Iterable[Path], wanted_ssid: str | None = None
+) -> tuple[str, str, Path]:
+    searched = []
     for path in paths:
         if not path.is_file():
             continue
-        profile = read_wifi_profile(path)
+        searched.append(path)
+        profile = read_wifi_profile(path, wanted_ssid)
         if profile is not None:
             return profile[0], profile[1], path
+    if wanted_ssid is not None:
+        # Loud, because the alternative is compiling some other network's
+        # credentials into the cubes and discovering it when they will not
+        # associate at an event.
+        raise RuntimeError(
+            f"SSID {wanted_ssid!r} is not configured in any DietPi WiFi "
+            "profile. Add it to dietpi-wifi.txt (or correct the configured "
+            "cube SSID). Searched: "
+            + (", ".join(str(path) for path in searched) or "no profile files")
+        )
     raise RuntimeError(
         "No configured DietPi WiFi profile found in: "
         + ", ".join(str(path) for path in paths)
@@ -133,6 +156,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument(
+        "--ssid",
+        help=(
+            "SSID to compile into the firmware. The ESP32 is 2.4GHz only while "
+            "the Pi is dual-band, so naming it is the only way to be sure the "
+            "cubes get a network they can join. Without it the lowest-numbered "
+            "configured entry wins, whatever band it is on."
+        ),
+    )
+    parser.add_argument(
         "--profile",
         action="append",
         type=Path,
@@ -148,7 +180,9 @@ def main() -> int:
         print(f"Preserving existing firmware secrets: {args.output}")
         return 0
 
-    ssid, key, profile_path = find_wifi_profile(args.profiles or DEFAULT_PROFILE_PATHS)
+    ssid, key, profile_path = find_wifi_profile(
+        args.profiles or DEFAULT_PROFILE_PATHS, args.ssid
+    )
     if create_header(args.output, render_header(ssid, key)):
         print(f"Created protected firmware secrets from {profile_path}")
     else:
