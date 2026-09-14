@@ -169,10 +169,16 @@ class WiringTests(unittest.TestCase):
         self.assertIn('rm -f "/etc/systemd/system/$failover_service"', bootstrap)
 
     def test_lexacube_enables_failover(self):
-        import yaml
-        config = yaml.safe_load((REPOSITORY / "apps.yaml").read_text())
-        app = next(a for a in config["apps"] if a["name"] == "lexacube")
-        self.assertTrue(app["service_address"]["failover"])
+        """Read as text rather than parsed, per test_generated_units.py: this
+        suite is stdlib-only and bootstrap.sh reads apps.yaml with the `yq`
+        CLI. The `import yaml` this used to do made the test an error rather
+        than a pass on any box without pyyaml -- including this one."""
+        config = (REPOSITORY / "apps.yaml").read_text(encoding="utf-8")
+        start = config.index("- name: lexacube")
+        block = config[start:]
+        end = block.find("\n  - name:")
+        block = block if end == -1 else block[:end]
+        self.assertRegex(block, r"(?m)^\s*failover:\s*true\s*(#.*)?$")
 
 
 if __name__ == "__main__":

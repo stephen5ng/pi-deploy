@@ -186,8 +186,37 @@ is reported with a diff on every run so drift is visible rather than silent.
 file on the boot partition during SD prep, the same way `dietpi.txt` and
 `dietpi-wifi.txt` are placed; bootstrap installs it to `/etc/<name>.env` (mode
 0600), which the generated unit already reads via `EnvironmentFile`. See
-`knockstrip.env.template.txt`. Same write-if-absent policy, and the diff is
-never printed.
+`knockstrip.env.template.txt` and `lexacube.env.template.txt`. Same
+write-if-absent policy, and the diff is never printed.
+
+### Gameplay Analytics (lexacube)
+
+The Pi records gameplay to an on-disk outbox during an event, when it has no
+route out, and uploads afterwards. Three pieces have to agree:
+
+- **`LEXACUBE_ANALYTICS_DIR=/var/lib/lexacube/analytics`** in lexacube's
+  `environment`. Recording is opt-in by this variable's *presence*, so that a
+  developer run and the test suite cannot litter an outbox. Remove it and the
+  Pi plays normally and records nothing — no error, no data.
+- **`deploy/lexacube-analytics-upload.{service,timer}`** (cubes repo), declared
+  as `extra_units`. The service is a `Type=oneshot` with no `[Install]`
+  section; only the **timer** is enabled. It polls `OnCalendar=hourly` with
+  `Persistent=true` rather than hooking network-up, because the uploader
+  already treats an unreachable vendor as *deferred* — it keeps the files and
+  exits 0 — so a run with no route is a no-op and the first run after the Pi is
+  home drains everything.
+- **`POSTHOG_API_KEY` and `ANALYTICS_PRODUCT`** in `/boot/lexacube.env`.
+
+`ANALYTICS_PRODUCT` is the one that must not be got wrong, and the uploader
+**refuses to send** without it. PostHog's free tier allows a single project, so
+several products share one event namespace and event names are not disjoint
+between them (`session_started` means something different per product). There
+is no error for a wrong value, only numbers that are wrong and are found much
+later. `knockstrip.env.template.txt` carries the same `POSTHOG_API_KEY`; if
+both games ever report to one project, both need a distinct product.
+
+The outbox path lives in two repositories and agrees only by literal, so
+`tests/test_analytics_upload_wiring.py` pins it on this side.
 
 ### Systemd Service Pattern
 

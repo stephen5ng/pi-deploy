@@ -26,12 +26,26 @@ apps:
       - LED_DISPLAY_TYPE=mini
       - LEXACUBE_ADMIN_HOST=0.0.0.0
       - LEXACUBE_ADMIN_PORT=8080
+      # Analytics are opt-in by the presence of this variable, so that a
+      # developer run and the test suite cannot litter an outbox. Setting it
+      # here is what turns gameplay recording on, and it is the Pi's only
+      # deployment. Must match the outbox in
+      # deploy/lexacube-analytics-upload.service, which is what drains it.
+      - LEXACUBE_ANALYTICS_DIR=/var/lib/lexacube/analytics
     extra_units:
       # The admin page runs as its own service so it survives the game
       # restarts it triggers (updates, panel tests). The cubes repo owns the
       # unit; requires cubes master to contain deploy/lexacube-admin.service
       # (PR #42) or bootstrap fails fast.
       - source: deploy/lexacube-admin.service
+        enable: true
+      # The game records gameplay to an on-disk outbox during an event, when
+      # the Pi has no route out; this drains it afterwards. The service is
+      # installed but deliberately NOT enabled -- it is a Type=oneshot with no
+      # [Install] section, triggered by the timer below. Enabling the timer is
+      # what schedules it.
+      - source: deploy/lexacube-analytics-upload.service
+      - source: deploy/lexacube-analytics-upload.timer
         enable: true
     apt_packages:
       - python3-dev
