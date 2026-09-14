@@ -312,6 +312,20 @@ as an automatic fallback. Three parts, all idempotent:
   while the wire idles — measured: `ip route get <cube>` chose `wlan0` until the
   subnet metric was fixed. `/usr/local/sbin/pi-deploy-route-metrics`, run from
   an `if-up.d` hook so it also fires on a DHCP renewal, applies that half.
+
+  That hook **deletes before it adds**, and must. The kernel creates a metric-0
+  route for the prefix automatically whenever an address is assigned, on both
+  interfaces, and `ip route replace` cannot overwrite it with a different
+  metric — metric is part of the route key, so a replace *adds* a second route.
+  Measured after a reboot with the replace-based version: four routes for the
+  one prefix (kernel metric-0 on `eth0` **and** `wlan0`, plus 100 and 600), the
+  metric-0 pair outranking both of ours and tying with each other, so the
+  winner was boot insertion order rather than anything configured. It happened
+  to pick the wire; nothing made it. Nor can that route be removed on its own:
+  iproute2 treats an unspecified metric and an explicit `metric 0` alike as
+  "match any", so either form deletes whichever route is found first. Deleting
+  until none remain, then adding one at the intended metric, is the only
+  selective-enough operation available.
 - **ARP scoped to the owning interface.** Both interfaces hold an address in one
   subnet, and Linux answers ARP for any local address on any interface, so
   `wlan0` would answer for a service address living on `eth0`.

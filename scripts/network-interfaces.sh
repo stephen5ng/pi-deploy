@@ -179,7 +179,36 @@ apply() {
             | awk '{print \$1; exit}')
         [ -n "\$network" ] || continue
         source_ip=\${cidr%%/*}
-        ip route replace "\$network" dev "\$iface" proto kernel scope link \\
+        # Remove every existing kernel/link route for this prefix on this
+        # device, then install one at the metric we want.
+        #
+        # Not "ip route replace": metric is part of the route key, so replacing
+        # a metric-0 route with a metric-100 one ADDS a second route and leaves
+        # the original. The kernel creates that metric-0 route automatically
+        # whenever an address is assigned, on both interfaces, so after a boot
+        # the table held FOUR routes for this prefix -- kernel metric-0 on eth0
+        # AND wlan0, plus this function's 100 and 600. The metric-0 pair
+        # outranks both of ours, they tie with each other, and which one wins
+        # is insertion order at boot rather than anything configured here.
+        # Measured on the rig after a reboot: it happened to pick eth0, with
+        # nothing guaranteeing the next boot does.
+        #
+        # Nor can the metric-0 route be deleted on its own. iproute2 treats an
+        # unspecified metric and an explicit "metric 0" alike as "match any",
+        # so both forms delete whichever route is found first -- verified by
+        # deleting wlan0's metric-600 route twice while trying to remove a
+        # metric-0 one that did not exist. Deleting until none remain is the
+        # only selective-enough operation available.
+        #
+        # The gap between the last delete and the add is microseconds, and the
+        # other interface's route for the same prefix covers it.
+        attempts=0
+        while ip route del "\$network" dev "\$iface" proto kernel scope link \\
+                2>/dev/null; do
+            attempts=\$((attempts + 1))
+            [ "\$attempts" -gt 10 ] && break
+        done
+        ip route add "\$network" dev "\$iface" proto kernel scope link \\
             src "\$source_ip" metric "\$metric" 2>/dev/null || true
         break
     done

@@ -210,6 +210,23 @@ class StanzaRewriteTests(unittest.TestCase):
                     self.assertEqual(len(heads), 1, f"{interface}: {heads}")
 
 class ScriptWiringTests(unittest.TestCase):
+    def route_metrics_hook(self) -> str:
+        """The hook as the script writes it, extracted from the script."""
+        match = re.search(
+            r"cat > /usr/local/sbin/pi-deploy-route-metrics <<EOF\n(.*?)\nEOF\n",
+            SCRIPT.read_text(), re.S,
+        )
+        assert match, "could not find the route-metrics heredoc"
+        return match.group(1)
+
+    def route_metrics_commands(self) -> str:
+        """The hook with comment lines stripped, so an assertion about what it
+        runs cannot be satisfied by a comment explaining what it avoids."""
+        return "\n".join(
+            line for line in self.route_metrics_hook().splitlines()
+            if not line.strip().startswith("#")
+        )
+
     def test_the_script_is_valid_bash(self):
         subprocess.run(["bash", "-n", str(SCRIPT)], check=True, capture_output=True)
 
@@ -225,6 +242,44 @@ class ScriptWiringTests(unittest.TestCase):
         text = SCRIPT.read_text()
         self.assertIn("pi-deploy-route-metrics", text)
         self.assertIn("proto kernel scope link", text)
+
+    def test_the_subnet_route_is_not_installed_with_replace(self):
+        """`ip route replace` cannot do this job, and using it looks like it
+        works.
+
+        Metric is part of the route key, so replacing the kernel's automatic
+        metric-0 route with a metric-100 one ADDS a second route and leaves the
+        original in place. Measured on the rig after a reboot: four routes for
+        the one prefix -- kernel metric-0 on eth0 AND wlan0, plus 100 and 600 --
+        with the metric-0 pair outranking both of ours and tying with each
+        other, so the winner was boot insertion order rather than anything this
+        script configured. It picked the wire that time. Nothing made it.
+        """
+        # Commands only: the hook explains in a comment why it does not use
+        # replace, so a substring search matches its own rationale.
+        commands = self.route_metrics_commands()
+        self.assertNotIn("replace", commands)
+        self.assertIn("ip route del", commands)
+        self.assertIn("ip route add", commands)
+        # Delete must precede the add, or the add is what gets deleted.
+        self.assertLess(commands.index("ip route del"), commands.index("ip route add"))
+
+    def test_the_delete_loop_is_bounded(self):
+        """It deletes until none remain because iproute2 has no selective
+        delete-by-metric -- an unspecified metric and an explicit `metric 0`
+        both mean "match any", so either form removes whichever route is found
+        first. An unbounded loop here would hang ifup on any surprise."""
+        commands = self.route_metrics_commands()
+        self.assertIn("while ip route del", commands)
+        self.assertRegex(commands, r"attempts.*-gt\s*\d+")
+        self.assertIn("break", commands)
+
+    def test_both_interfaces_get_their_metric(self):
+        # The heredoc is unquoted, so these are still shell variables here and
+        # are interpolated when the hook is written.
+        commands = self.route_metrics_commands()
+        self.assertIn("apply eth0 $WIRED_METRIC", commands)
+        self.assertIn("apply wlan0 $WIRELESS_METRIC", commands)
 
     def test_arp_is_scoped_to_the_owning_interface(self):
         text = SCRIPT.read_text()
