@@ -13,6 +13,9 @@
 #                            overflows instead of hanging the box.
 #   4. Health logger       — poll firmware throttle/undervoltage into the
 #                            (now persistent) journal for post-mortem.
+#   5. WiFi monitor off    — DietPi's reconnect watchdog does more harm than
+#                            good on a lossy link; see below.
+#   6. Link-down routing   — let a dead cable fail over instead of blackholing.
 #
 # Context: this Pi drives a USB audio DAC + RS485 adapter + boot SSD off the
 # 5V rail and suffered live-event hangs that needed a manual power-cycle.
@@ -28,7 +31,7 @@ echo "=== Reliability & observability hardening ==="
 # 1. Hardware watchdog. systemd pets /dev/watchdog0; if pid1 stops petting it
 #    (a total hang) the BCM2835 hardware resets the Pi after RuntimeWatchdogSec.
 # ---------------------------------------------------------------------------
-echo "[1/4] Arming hardware watchdog (15s)..."
+echo "[1/6] Arming hardware watchdog (15s)..."
 mkdir -p /etc/systemd/system.conf.d
 cat > /etc/systemd/system.conf.d/10-watchdog.conf <<'EOF'
 [Manager]
@@ -44,7 +47,7 @@ systemctl daemon-reexec
 #    ordering guarantees the bind is mounted before DietPi's ramlog service
 #    touches /var/log; nofail keeps boot alive if the SSD is ever absent.
 # ---------------------------------------------------------------------------
-echo "[2/4] Configuring persistent journald..."
+echo "[2/6] Configuring persistent journald..."
 mkdir -p /var/lib/journal-persist
 chown root:systemd-journal /var/lib/journal-persist
 chmod 2755 /var/lib/journal-persist
@@ -80,7 +83,7 @@ journalctl --flush || true
 #    persists AUTO_SETUP_SWAPFILE_* to dietpi.txt. (Fresh flashes get this
 #    from dietpi.template.txt: AUTO_SETUP_SWAPFILE_LOCATION=zram.)
 # ---------------------------------------------------------------------------
-echo "[3/4] Ensuring zram swap..."
+echo "[3/6] Ensuring zram swap..."
 if [[ "$(wc -l < /proc/swaps)" -le 1 ]]; then
     /boot/dietpi/func/dietpi-set_swapfile 1 zram
 else
@@ -94,7 +97,7 @@ fi
 #    the instrument that would confirm-or-exonerate a power fault under real
 #    event load. Query it with: journalctl -t pi-health
 # ---------------------------------------------------------------------------
-echo "[4/4] Installing health logger..."
+echo "[4/6] Installing health logger..."
 cat > /usr/local/bin/pi-health-watch.sh <<'EOF'
 #!/usr/bin/env bash
 # pi-health-watch: poll firmware throttle/undervoltage + temp into the
@@ -145,5 +148,72 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable --now pi-health-watch.service
+
+# ---------------------------------------------------------------------------
+# 5. Disable DietPi's WiFi monitor.
+#
+#    dietpi-wifi-monitor.sh pings the default gateway ONCE every 10s and, on a
+#    single lost reply, runs ifdown/ifup on the wireless interface. A one-packet
+#    probe fails by chance on any lossy link, so it fires on ordinary packet
+#    loss rather than on a hung adapter, and the remedy is far heavier than the
+#    diagnosis: ifdown releases the DHCP lease, and a measured cycle took ~24s
+#    from DHCPRELEASE to DHCPACK with no address configured at all. It also
+#    flushes the interface, stripping lexacube's 192.168.8.247 -- which every
+#    cube hardcodes -- so all six cubes drop at once.
+#
+#    Observed on this rig: 12 firings in one day on a link with 10-20% loss,
+#    each a ~24s outage. wpa_supplicant reassociates on its own in ~7s, so the
+#    watchdog only ever made things worse here.
+#
+#    Masked rather than merely disabled: dietpi-config's WiFi menu runs
+#    `systemctl enable --now dietpi-wifi-monitor`, which would silently bring it
+#    back; masking makes that fail loudly. The unit ships as a real file in
+#    /etc/systemd/system, so it must be moved aside before mask can place its
+#    /dev/null symlink.
+# ---------------------------------------------------------------------------
+echo "[5/6] Disabling DietPi WiFi monitor..."
+wifi_monitor_unit=/etc/systemd/system/dietpi-wifi-monitor.service
+wifi_monitor_backup=/opt/pi-deploy-disabled/dietpi-wifi-monitor.service
+
+systemctl stop dietpi-wifi-monitor 2>/dev/null || true
+systemctl disable dietpi-wifi-monitor 2>/dev/null || true
+
+if [[ -f "$wifi_monitor_unit" && ! -L "$wifi_monitor_unit" ]]; then
+    mkdir -p "$(dirname "$wifi_monitor_backup")"
+    mv "$wifi_monitor_unit" "$wifi_monitor_backup"
+    echo "  Moved the real unit aside to $wifi_monitor_backup"
+    systemctl daemon-reload
+fi
+
+if [[ "$(systemctl is-enabled dietpi-wifi-monitor 2>/dev/null || true)" == "masked" ]]; then
+    echo "  Already masked"
+else
+    systemctl mask dietpi-wifi-monitor
+    echo "  Masked dietpi-wifi-monitor"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Ignore routes on link-down interfaces.
+#
+#    When a cable is pulled the interface stays administratively UP with only
+#    NO-CARRIER, and Linux keeps its routes by default -- so traffic is handed
+#    to a dead NIC and blackholes instead of falling back. With this set the
+#    kernel skips routes whose interface has lost carrier, so a wired Pi with
+#    WiFi configured at a higher metric fails over on its own.
+#
+#    This also makes routing follow link state, which is what lets a service
+#    address be re-homed by re-running the service-address helper: its `auto`
+#    mode picks the interface via `ip route get`.
+# ---------------------------------------------------------------------------
+echo "[6/6] Ignoring routes on link-down interfaces..."
+cat > /etc/sysctl.d/60-pi-deploy-linkdown.conf <<'SYSCTL'
+# Managed by pi-deploy (scripts/reliability.sh).
+# Skip routes whose interface has lost carrier, so a dead cable fails over to a
+# higher-metric path instead of blackholing traffic on a NO-CARRIER interface.
+net.ipv4.conf.all.ignore_routes_with_linkdown = 1
+net.ipv4.conf.default.ignore_routes_with_linkdown = 1
+SYSCTL
+sysctl -q --system
+echo "  all.ignore_routes_with_linkdown = $(cat /proc/sys/net/ipv4/conf/all/ignore_routes_with_linkdown 2>/dev/null || echo '?')"
 
 echo "=== Reliability & observability hardening complete ==="
