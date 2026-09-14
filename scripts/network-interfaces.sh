@@ -53,28 +53,85 @@ else
     # Keep anything that is not one of the two stanzas we own, so a hand-added
     # drop-in source line or a third interface survives.
     python3 - "$INTERFACES" "$MARKER" "$WIRED_METRIC" "$WIRELESS_METRIC" <<'PY'
-import re
 import sys
 
 path, marker, wired_metric, wireless_metric = sys.argv[1:5]
-text = open(path).read()
 
-# Drop the existing eth0 and wlan0 stanzas entirely, comments included. The
-# eth0 one carries static address/netmask/gateway lines under an `inet dhcp`
-# method, which ifupdown ignores -- they read as configuration but are not.
-text = re.sub(
-    r"(?ms)^[ \t]*#?[ \t]*(?:auto|allow-hotplug)[ \t]+(eth0|wlan0)\b.*?"
-    r"(?=^[ \t]*#?[ \t]*(?:auto|allow-hotplug)[ \t]+\S|\Z)",
-    "",
-    text,
+OWNED = ("eth0", "wlan0")
+# Keywords that take a list of interface names.
+ALLOW_KEYWORDS = ("auto", "allow-auto", "allow-hotplug")
+# Every ifupdown keyword that begins a top-level stanza. A column-0 line
+# starting with anything else is left exactly where it is.
+STANZA_KEYWORDS = ALLOW_KEYWORDS + (
+    "iface", "mapping", "source", "source-directory",
+    "no-auto-down", "no-scripts",
 )
-# And any bare `iface eth0/wlan0` stanza not preceded by auto/allow-hotplug.
-text = re.sub(
-    r"(?ms)^[ \t]*iface[ \t]+(?:eth0|wlan0)[ \t]+inet\b.*?(?=^[ \t]*\S|\Z)",
-    "",
-    text,
-)
-text = text.rstrip() + "\n"
+
+
+def stanza_fields(line):
+    """The fields of a top-level stanza line, or None if this is not one.
+
+    Comments are never stanza heads. A commented-out directive is inert: it
+    cannot duplicate the stanzas this script appends, so there is nothing to
+    gain by deleting it and a whole class of mis-parses to avoid by leaving
+    every comment exactly where it is.
+    """
+    if not line.strip() or line[:1] in (" ", "\t", "#"):
+        return None
+    fields = line.split()
+    return fields if fields[0] in STANZA_KEYWORDS else None
+
+
+# Parsed line by line rather than by regex. Two stanzas have to be removed
+# whole from a file that may contain a third interface nobody told us about,
+# and a regex bounded by "the next auto/allow-hotplug line" gets that wrong
+# twice: it swallows a following bare `iface usb0` stanza, and for a bare
+# `iface eth0` it removes the head while orphaning the indented options at top
+# level. An orphaned option line is a malformed interfaces file, so that one
+# breaks more than the interface it came from.
+#
+# The two keyword shapes must not be conflated. `iface <name> <family>
+# <method>` names exactly one interface; `auto`/`allow-hotplug` take a list.
+# Reading `inet`/`dhcp` as interface names leaves the `iface` stanza in place
+# while removing its `allow-hotplug`, and a duplicate `iface` is rejected by
+# ifupdown outright -- no networking at all, rather than one interface short.
+kept = []
+dropping = False
+for line in open(path).read().splitlines():
+    fields = stanza_fields(line)
+    if fields is not None:
+        keyword = fields[0]
+        if keyword in ALLOW_KEYWORDS:
+            # No indented options follow an allow line, so this never starts a
+            # drop. A line naming other interfaces as well is rewritten rather
+            # than removed, so `auto eth0 usb0` does not cost usb0 its boot.
+            remaining = [name for name in fields[1:] if name not in OWNED]
+            if len(remaining) != len(fields) - 1:
+                if remaining:
+                    kept.append(" ".join([keyword] + remaining))
+            else:
+                kept.append(line)
+            dropping = False
+            continue
+        dropping = keyword == "iface" and len(fields) > 1 and fields[1] in OWNED
+        if dropping:
+            continue
+        kept.append(line)
+        continue
+    if dropping:
+        # Still inside an owned stanza. Every line that is not itself a stanza
+        # head belongs to it, indentation or not: DietPi's own file puts
+        # `address`/`netmask`/`gateway` at column 0, so treating indentation as
+        # the marker of an option line would strand exactly the directives this
+        # rewrite exists to remove. The boundary is the next stanza head -- now
+        # including a bare `iface`, which is what the regex missed.
+        #
+        # A comment introducing the *following* stanza is swallowed with it.
+        # That is cosmetic: comments are inert, and the stanza itself survives.
+        continue
+    kept.append(line)
+
+text = "\n".join(kept).rstrip() + "\n"
 
 text += f"""
 {marker}

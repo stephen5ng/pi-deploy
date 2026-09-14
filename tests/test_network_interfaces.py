@@ -42,6 +42,47 @@ wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
 """
 
 
+# A third interface nobody told this script about. The stanza is *bare* -- no
+# auto/allow-hotplug line -- which is what a regex bounded by "the next
+# auto/allow-hotplug line" cannot see, so it consumed this along with wlan0's.
+THIRD_INTERFACE = """\
+auto lo
+iface lo inet loopback
+
+allow-hotplug wlan0
+iface wlan0 inet dhcp
+    wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
+
+iface usb0 inet dhcp
+    metric 900
+"""
+
+# A bare owned stanza with unindented options, DietPi style, followed by an
+# unrelated stanza. Removing the head but not the options would leave
+# `address`/`netmask` at top level, which is a malformed file -- worse than
+# losing one interface, because ifupdown then configures nothing.
+BARE_OWNED_STANZA = """\
+auto lo
+iface lo inet loopback
+
+iface eth0 inet dhcp
+address 10.0.0.5
+netmask 255.255.255.0
+
+auto br0
+iface br0 inet manual
+"""
+
+# One allow line naming an owned interface *and* another one.
+SHARED_ALLOW_LINE = """\
+auto eth0 usb0
+
+allow-hotplug usb0
+iface usb0 inet dhcp
+    metric 900
+"""
+
+
 def extract_rewriter() -> str:
     """The python heredoc the script runs, taken from the script itself."""
     source = SCRIPT.read_text()
@@ -116,6 +157,57 @@ class StanzaRewriteTests(unittest.TestCase):
             "a second rewrite duplicated the stanza",
         )
 
+    def test_a_bare_third_interface_survives(self):
+        """The reported case. `iface usb0` has no auto/allow-hotplug line, so
+        the old regex ran past it and deleted it with wlan0's stanza -- after
+        a reboot, no configuration for that interface at all."""
+        result = self.rewrite(THIRD_INTERFACE, self.tmp)
+        self.assertIn("iface usb0 inet dhcp", result)
+        self.assertIn("metric 900", result)
+
+    def test_a_bare_owned_stanza_takes_its_options_with_it(self):
+        """The other half of the same regex bug: the head was removed and the
+        unindented options were left orphaned at top level."""
+        result = self.rewrite(BARE_OWNED_STANZA, self.tmp)
+        kept = result.split(MARKER)[0]
+        self.assertNotIn("address 10.0.0.5", kept)
+        self.assertNotIn("netmask 255.255.255.0", kept)
+        # ...without taking the neighbour with it.
+        self.assertIn("iface br0 inet manual", result)
+        self.assertIn("auto br0", result)
+
+    def test_an_allow_line_naming_others_keeps_them(self):
+        """`auto eth0 usb0` must not cost usb0 its boot-time bring-up. eth0's
+        is covered by the appended `allow-hotplug eth0`."""
+        result = self.rewrite(SHARED_ALLOW_LINE, self.tmp)
+        kept = result.split(MARKER)[0]
+        self.assertIn("auto usb0", kept)
+        self.assertNotIn("auto eth0 usb0", kept)
+        self.assertIn("iface usb0 inet dhcp", result)
+
+    def test_no_fixture_yields_a_duplicate_definition(self):
+        """ifupdown rejects a duplicate `iface`, and the result is no
+        networking at all rather than one interface short -- so this is the
+        assertion that matters most on every shape of input.
+
+        It is also the regression an intermediate version of the parser
+        introduced, by reading `inet`/`dhcp` in `iface wlan0 inet dhcp` as
+        interface names: the allow line went and the iface stanza stayed.
+        """
+        for name, fixture in (
+            ("dietpi", DIETPI_INTERFACES),
+            ("third-interface", THIRD_INTERFACE),
+            ("bare-owned", BARE_OWNED_STANZA),
+            ("shared-allow", SHARED_ALLOW_LINE),
+        ):
+            with self.subTest(fixture=name):
+                result = self.rewrite(fixture, self.tmp)
+                for interface in ("eth0", "wlan0"):
+                    heads = [
+                        line for line in result.splitlines()
+                        if line.split()[:2] == ["iface", interface]
+                    ]
+                    self.assertEqual(len(heads), 1, f"{interface}: {heads}")
 
 class ScriptWiringTests(unittest.TestCase):
     def test_the_script_is_valid_bash(self):
