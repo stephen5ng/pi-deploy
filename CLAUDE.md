@@ -126,6 +126,26 @@ When modifying application configuration:
   cover: it re-adds `.247` only when the address is missing from every
   interface, and losing carrier is not an `ifup` event, so a dead cable leaves
   `.247` stranded on a NO-CARRIER interface with the cubes offline
+- `/etc/dhcp/dhclient-exit-hooks.d/50-lexacube-address` covers the third path,
+  which neither of the other two reach. `if-up.d` is run by `ifup` and **not**
+  by dhclient: `/sbin/dhclient-script` handles `RENEW`/`REBIND` itself and
+  calls the exit-hooks directory. On the path where a lease returns a
+  *different* address it runs `ip -4 addr flush dev $interface label
+  $interface`, and a secondary service address carries the interface's own
+  label — so the flush takes `.247` with it. Measured on the rig: `eth0` was
+  left with **no addresses at all**. The `ifup` hook does not run (no `ifup`
+  happened) and the failover watcher does not fire (the carrier never
+  dropped), so before this hook existed the address was simply gone while
+  `systemctl` still reported `lexacube-address.service` active.
+  The exit hook is *sourced* by dhclient-script, so it uses `return`, never
+  `exit`; it is mode 644 with no shebang, and its name has no dot because
+  run-parts skips those. All three are ways to install a hook that silently
+  never runs or breaks the hooks after it.
+- The shared decision — *does this event mean the address needs reclaiming?* —
+  lives once in `/usr/local/sbin/lexacube-address-reclaim-if-missing`, which
+  both hooks call. It checks the owning unit is still active and the address
+  is genuinely absent, then detaches the reclaim, because the `arping` probe
+  takes up to ~20s and neither `ifup` nor dhclient may block on it
 - Depends on: rpi-rgb-led-matrix library for LED control
 - Uses: Python venv at `/opt/lexacube/cube_env`
 - Output: Written to `/opt/lexacube/output/` (owned by daemon user)
