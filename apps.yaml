@@ -17,6 +17,11 @@ apps:
     service_address:
       address: 192.168.8.247/24
       interface: auto
+      # Every cube hardcodes this address, so it must follow a working
+      # interface. Without the watcher a pulled cable strands it on a
+      # NO-CARRIER NIC and all six cubes go offline while the Pi itself is
+      # still reachable over WiFi.
+      failover: true
     environment:
       - LED_DISPLAY_TYPE=mini
       - LEXACUBE_ADMIN_HOST=0.0.0.0
