@@ -24,7 +24,22 @@ apps:
     default_in_group: true
     service_address:
       address: 192.168.8.247/24
-      interface: auto
+      # eth0, not auto. Disabling failover only stops a LATER move; `auto`
+      # still resolves the interface with `ip route get` at claim time, and
+      # with ignore_routes_with_linkdown a carrier-less eth0 at boot sends
+      # that lookup to WiFi. The address would then start on WiFi and -- with
+      # no watcher to move it back -- stay there when the cable returned:
+      # exactly the silent high-latency state pinning exists to prevent.
+      #
+      # The consequence is deliberate and worth stating plainly: with no
+      # working cable, `service-address start` cannot arping on eth0, the
+      # address unit fails after ~20s of retries, and lexacube.service --
+      # which Requires= it -- does not start. The game will not run without
+      # the wire. That is the same choice as failover: false, carried to its
+      # conclusion. A rig that needs the cable should refuse to pretend
+      # otherwise, and a game that does not start is the least missable
+      # failure available.
+      interface: eth0
       # Deliberately pinned: the address does NOT follow a working interface.
       #
       # Every cube hardcodes it, so a pulled cable strands it on a NO-CARRIER
