@@ -191,6 +191,36 @@ class WiringTests(unittest.TestCase):
         block = block if end == -1 else block[:end]
         self.assertRegex(block, r"(?m)^\s*failover:\s*false\s*(#.*)?$")
 
+    def test_a_pinned_address_retries_until_the_interface_works(self):
+        """A pinned interface can be legitimately unusable at boot -- no cable.
+        Without a retry the claim fails once and stays failed until someone
+        runs reset-failed by hand, on a headless box, at an event.
+
+        Restart= is permitted on Type=oneshot for on-failure; verified on
+        systemd 257. The unit reports "activating" between attempts, which is
+        honest: the address is not claimed yet.
+        """
+        bootstrap = (REPOSITORY / "bootstrap.sh").read_text()
+        block = bootstrap[bootstrap.index("Description=$name service address"):]
+        block = block[:block.index("EOF")]
+        self.assertIn("Restart=on-failure", block)
+        self.assertRegex(block, r"RestartSec=\d+")
+
+    def test_a_pinned_address_restarts_the_app_once_it_succeeds(self):
+        """Retrying the claim is not enough on its own. When the claim fails,
+        systemd cancels the app's start job as "dependency failed", and a retry
+        that later succeeds does not bring the job back -- measured on the rig,
+        carrier returned, the address landed on eth0, and the game stayed
+        inactive indefinitely.
+
+        Upholds= is a continuously-reasserted Wants=, so the app starts as soon
+        as the address exists, however long that takes.
+        """
+        bootstrap = (REPOSITORY / "bootstrap.sh").read_text()
+        block = bootstrap[bootstrap.index("Description=$name service address"):]
+        block = block[:block.index("EOF")]
+        self.assertIn("Upholds=$name.service", block)
+
     def test_bootstrap_removes_the_watcher_when_an_app_stops_asking(self):
         """Turning the key off must actually uninstall it. A watcher left
         running would keep moving the address off the wire, which is the whole
