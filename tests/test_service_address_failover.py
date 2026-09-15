@@ -168,17 +168,36 @@ class WiringTests(unittest.TestCase):
         bootstrap = (REPOSITORY / "bootstrap.sh").read_text()
         self.assertIn('rm -f "/etc/systemd/system/$failover_service"', bootstrap)
 
-    def test_lexacube_enables_failover(self):
-        """Read as text rather than parsed, per test_generated_units.py: this
+    def test_lexacube_pins_its_service_address_to_the_wire(self):
+        """lexacube deliberately does NOT fail over. See apps.yaml for the
+        measurement, but in short: failing over keeps the game limping on WiFi
+        and then leaves it there after the cable returns, needing a restart
+        nobody knows to perform. Pinning drops every cube at once -- loud and
+        certain -- and recovers by itself when carrier comes back, because the
+        address never went anywhere.
+
+        The watcher itself stays in this repo and is still tested above; this
+        asserts only that this app does not ask for it.
+
+        Read as text rather than parsed, per test_generated_units.py: this
         suite is stdlib-only and bootstrap.sh reads apps.yaml with the `yq`
         CLI. The `import yaml` this used to do made the test an error rather
-        than a pass on any box without pyyaml -- including this one."""
+        than a pass on any box without pyyaml -- including this one.
+        """
         config = (REPOSITORY / "apps.yaml").read_text(encoding="utf-8")
         start = config.index("- name: lexacube")
         block = config[start:]
         end = block.find("\n  - name:")
         block = block if end == -1 else block[:end]
-        self.assertRegex(block, r"(?m)^\s*failover:\s*true\s*(#.*)?$")
+        self.assertRegex(block, r"(?m)^\s*failover:\s*false\s*(#.*)?$")
+
+    def test_bootstrap_removes_the_watcher_when_an_app_stops_asking(self):
+        """Turning the key off must actually uninstall it. A watcher left
+        running would keep moving the address off the wire, which is the whole
+        behaviour being retired -- and it would do so invisibly."""
+        bootstrap = (REPOSITORY / "bootstrap.sh").read_text()
+        self.assertIn('systemctl disable --now "$failover_service"', bootstrap)
+        self.assertIn('rm -f "/etc/systemd/system/$failover_service"', bootstrap)
 
 
 if __name__ == "__main__":
