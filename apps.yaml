@@ -12,7 +12,7 @@ apps:
     branch: "master"
     path: /opt/lexacube
     venv: cube_env
-    exec: /opt/lexacube/cube_env/bin/python3 /opt/lexacube/runpygame.py --mode classic
+    exec: /opt/lexacube/cube_env/bin/python3 /opt/lexacube/runpygame.py
     user: root  # Required for rpi-rgb-led-matrix GPIO access
     after: "network.target"
     # Only one member of an exclusive_group may run at a time. The two games
