@@ -24,12 +24,48 @@ apps:
     default_in_group: true
     service_address:
       address: 192.168.8.247/24
-      interface: auto
-      # Every cube hardcodes this address, so it must follow a working
-      # interface. Without the watcher a pulled cable strands it on a
-      # NO-CARRIER NIC and all six cubes go offline while the Pi itself is
-      # still reachable over WiFi.
-      failover: true
+      # eth0, not auto. Disabling failover only stops a LATER move; `auto`
+      # still resolves the interface with `ip route get` at claim time, and
+      # with ignore_routes_with_linkdown a carrier-less eth0 at boot sends
+      # that lookup to WiFi. The address would then start on WiFi and -- with
+      # no watcher to move it back -- stay there when the cable returned:
+      # exactly the silent high-latency state pinning exists to prevent.
+      #
+      # The consequence is deliberate and worth stating plainly: with no
+      # working cable, `service-address start` cannot arping on eth0, the
+      # address unit fails after ~20s of retries, and lexacube.service --
+      # which Requires= it -- does not start. The game will not run without
+      # the wire. That is the same choice as failover: false, carried to its
+      # conclusion. A rig that needs the cable should refuse to pretend
+      # otherwise, and a game that does not start is the least missable
+      # failure available.
+      interface: eth0
+      # Deliberately pinned: the address does NOT follow a working interface.
+      #
+      # Every cube hardcodes it, so a pulled cable strands it on a NO-CARRIER
+      # NIC and every cube drops at once. That was originally read as the bug
+      # the watcher existed to fix. Measured on the rig, failing over is the
+      # worse of the two:
+      #
+      #   watcher on   cable out: address moves to WiFi in ~7s, the game keeps
+      #                running at the latency wiring the Pi was meant to remove
+      #                cable in:  it STAYS on WiFi. Only a lexacube restart or
+      #                a reboot brings it back, and nothing says so.
+      #   watcher off  cable out: every cube drops. Loud, immediate, certain.
+      #                cable in:  carrier returns, the address is already here,
+      #                the subnet route revives on its own, cubes reconnect.
+      #                Nothing to restart.
+      #
+      # So pinning gives a failure that cannot be missed AND a recovery that
+      # needs no intervention. What it gives up is limping through an outage,
+      # which is the property least wanted here: an event was already lost to
+      # latency nobody could see. A hard stop gets the cable reseated in a
+      # minute; a quiet degradation lasts all night.
+      #
+      # WiFi stays configured as an ADMIN path, not a game path -- with
+      # ignore_routes_with_linkdown the Pi's own traffic still moves there, so
+      # a dead cable leaves the box diagnosable while the game is plainly down.
+      failover: false
     environment:
       - LED_DISPLAY_TYPE=mini
       - LEXACUBE_ADMIN_HOST=0.0.0.0

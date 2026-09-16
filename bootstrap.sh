@@ -610,10 +610,33 @@ Wants=network-online.target
 After=network-online.target
 PartOf=$name.service
 Before=$name.service
+# Keep trying to start the app while this address is held.
+#
+# Needed because a pinned interface can legitimately be unusable at boot -- no
+# cable -- and then the claim fails, systemd cancels the app's start job as
+# "dependency failed", and nothing re-queues it when the cable arrives. Restart=
+# below makes the claim itself retry, but a retry that eventually succeeds still
+# leaves the app stopped: the job it was blocking is long gone. Measured on the
+# rig: carrier returned, the address landed on eth0, and the game sat inactive
+# indefinitely.
+#
+# Upholds= is a continuously-reasserted Wants=, so the app starts as soon as the
+# address exists, however long that takes. Verified not to fight PartOf= above:
+# stopping the app stops this unit, which withdraws the Upholds rather than
+# racing it.
+Upholds=$name.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Retry rather than give up. A pinned interface with no carrier cannot be
+# arping'd, so `start` exits non-zero, and without this the unit stays failed
+# until someone runs reset-failed by hand -- on a headless box, at an event.
+# Restart= is permitted on Type=oneshot for on-failure (verified on systemd
+# 257); the unit reports "activating" between attempts, which is honest: the
+# address genuinely is not claimed yet.
+Restart=on-failure
+RestartSec=10
 ExecStart=$address_helper start $service_address $service_address_interface
 ExecStop=$address_helper stop $service_address $service_address_interface
 EOF
