@@ -125,7 +125,9 @@ When modifying application configuration:
   reconfiguration, has the same effect. Note also what the hook does *not*
   cover: it re-adds `.247` only when the address is missing from every
   interface, and losing carrier is not an `ifup` event, so a dead cable leaves
-  `.247` stranded on a NO-CARRIER interface with the cubes offline
+  `.247` stranded on a NO-CARRIER interface with the cubes offline — which,
+  since `failover: false`, is now the intended behaviour rather than a gap.
+  See "Systemd Service Pattern" for why a loud failure beats a quiet one here
 - `/etc/dhcp/dhclient-exit-hooks.d/50-lexacube-address` covers the third path,
   which neither of the other two reach. `if-up.d` is run by `ifup` and **not**
   by dhclient: `/sbin/dhclient-script` handles `RENEW`/`REBIND` itself and
@@ -275,25 +277,44 @@ deployment.
 
 `service_address.failover: true` additionally installs
 `<app>-address-failover.service`, which watches the interface holding the
-address and re-homes it when that interface loses carrier. This is not covered
-by the `if-up.d` hook: that hook fires on `ifup` and only when the address is
-missing from *every* interface, whereas losing carrier is neither. Without it a
-pulled cable leaves the address advertised on a `NO-CARRIER` interface while the
-box is still perfectly reachable elsewhere — for lexacube that means all six
-cubes offline, because they hardcode `.247`. The watcher does not pick an
-interface itself; it hands the address back to `service-address ... auto`, which
-resolves one with `ip route get`. If that re-claim fails — no alternate path is
-up yet, or `arping` trips transiently — the address is left configured nowhere,
-so the watcher remembers it owes the address a home and keeps retrying. Nothing
-else would: losing carrier fires no `ifup`, so the reclaim hook never runs. It
-retries only an address it released itself; one that was simply never claimed
-belongs to the hook, and racing it would be worse. That works because `scripts/reliability.sh`
-sets `ignore_routes_with_linkdown`, so routing already skips link-down
-interfaces — the two are a pair, and the watcher is a no-op without it.
+address and re-homes it when that interface loses carrier. The watcher does not
+pick an interface itself; it hands the address back to `service-address ...
+auto`, which resolves one with `ip route get`. If that re-claim fails — no
+alternate path is up yet, or `arping` trips transiently — the address is left
+configured nowhere, so the watcher remembers it owes the address a home and
+keeps retrying. It retries only an address it released itself; one that was
+simply never claimed belongs to the `if-up.d` hook, and racing it would be
+worse. It relies on `ignore_routes_with_linkdown` from `scripts/reliability.sh`
+to have routing skip link-down interfaces, and is close to a no-op without it.
 
-It fails over but deliberately does **not** fail back: when the cable returns
-the address stays put until the app restarts. Chasing the "best" interface would
-flap the address, and every move drops all MQTT sessions.
+It fails over but does **not** fail back: when the cable returns the address
+stays put until the app restarts.
+
+**lexacube sets `failover: false`, deliberately.** The feature was written for
+it, and measurement on the rig showed it made things worse:
+
+| | `failover: true` | `failover: false` |
+|---|---|---|
+| cable out | address moves to WiFi in ~7s; game keeps running at the latency that wiring the Pi was meant to remove | every cube drops at once — loud, immediate, certain |
+| cable in | **stays on WiFi.** Only a `lexacube` restart or a reboot brings it back, and nothing reports it | carrier returns, the address never left, the subnet route revives on its own, cubes reconnect with nothing to restart |
+
+So pinning the address gives both a failure that cannot be missed *and* a
+recovery needing no intervention. What it gives up is limping through an
+outage — the property least wanted here, since an event was already lost to
+latency nobody could see. A hard stop gets a cable reseated in a minute; a
+quiet degradation lasts all night.
+
+Note what recovers by itself either way: **on-link traffic**, which is all cube
+traffic. The subnet route revives the moment carrier returns (measured). What
+does *not* return without help is the **default** route — the kernel deletes a
+route via a gateway when that gateway goes unreachable, rather than marking it
+dead as it does the on-link route, and only dhclient re-adds it, on a lease
+timer that can be ten hours away. That costs internet over the wire, which at
+an event does not exist. If it matters, reboot.
+
+WiFi stays configured as an **admin** path, not a game path. With
+`ignore_routes_with_linkdown` the Pi's own traffic still moves there, so a dead
+cable leaves the box reachable and diagnosable while the game is plainly down.
 
 Apps may declare `extra_units` — sibling unit files shipped in the app repo,
 installed to `/etc/systemd/system` regardless of whether the app's main unit
