@@ -30,4 +30,4 @@ else
 fi
 
 cd "$DEPLOY_DIR"
-exec ./bootstrap.sh lexacube
+exec ./bootstrap.sh
