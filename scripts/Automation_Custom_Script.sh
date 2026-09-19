@@ -30,9 +30,4 @@ else
 fi
 
 cd "$DEPLOY_DIR"
-# No app selector here: a freshly provisioned Pi must install every app in
-# apps.yaml. Passing `lexacube` made the first boot silently skip Knockstrip,
-# even though its configuration and unit declarations were present.
-# Exclusive-group activation below bootstrap still starts only the configured
-# default game, so installing both games does not run them concurrently.
 exec ./bootstrap.sh
