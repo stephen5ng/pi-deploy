@@ -16,6 +16,53 @@ if ! command -v yq &> /dev/null; then
     apt-get install -y --no-install-recommends yq
 fi
 
+# Cube WiFi credentials can be supplied at imaging time without ever teaching
+# the Pi to associate with that network. The FAT boot partition cannot retain
+# secure permissions, so consume the generated header into /etc before the
+# dependency loop asks for it, then remove the boot copy.
+BOOT_FIRMWARE_SECRETS="/boot/firmware/lexacube-firmware-secrets.h"
+if [[ ! -f "$BOOT_FIRMWARE_SECRETS" ]]; then
+    BOOT_FIRMWARE_SECRETS="/boot/lexacube-firmware-secrets.h"
+fi
+if [[ -f "$BOOT_FIRMWARE_SECRETS" ]]; then
+    if [[ -e /etc/lexacube-firmware-secrets.h ]]; then
+        echo "Preserving existing /etc/lexacube-firmware-secrets.h"
+    else
+        install -D -m 600 "$BOOT_FIRMWARE_SECRETS" /etc/lexacube-firmware-secrets.h
+        echo "Installed staged cube firmware credentials"
+    fi
+    rm -f "$BOOT_FIRMWARE_SECRETS"
+fi
+
+# Application environment files can be staged manually during an SSD
+# replacement. Consume every configured app's file before any dependency build
+# (which may fail) so credentials are both available to later service setup and
+# never left readable on the FAT boot partition.
+consume_staged_app_env() {
+    local name=$1
+    local boot_dir boot_env destination="/etc/${name}.env"
+
+    for boot_dir in /boot/firmware /boot; do
+        boot_env="$boot_dir/${name}.env"
+        [[ -f "$boot_env" ]] || continue
+
+        if [[ ! -f "$destination" ]]; then
+            install -D -m 600 "$boot_env" "$destination"
+            echo "Installed staged secrets: $boot_env -> $destination"
+        elif ! diff -q "$boot_env" "$destination" >/dev/null; then
+            # Never print a diff: either side can contain credentials.
+            echo "WARNING: $boot_env differs from $destination; kept the" >&2
+            echo "         installed file and discarded the boot-partition copy." >&2
+        fi
+        rm -f "$boot_env"
+        return 0
+    done
+}
+
+while IFS= read -r staged_app_name; do
+    consume_staged_app_env "$staged_app_name"
+done < <(yq -r '.apps[].name' "$CONFIG")
+
 app_is_selected() {
     local candidate=$1
     local selected_app
@@ -451,29 +498,6 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
         else
             echo "  Per-rig file up to date: $rig_dest"
         fi
-    done
-
-    # --------------------------------------------------------------------------
-    # Secrets from the boot partition
-    # Credentials cannot be defaulted or committed, but they must survive a
-    # reflash. Same route as WiFi: drop <name>.env on the boot partition during
-    # SD prep (see *.env.template.txt) and bootstrap installs it to the
-    # /etc/<name>.env that the generated unit already reads via EnvironmentFile.
-    # Same policy as per-rig files: install when absent, warn rather than clobber.
-    # --------------------------------------------------------------------------
-    for boot_dir in /boot/firmware /boot; do
-        boot_env="$boot_dir/${name}.env"
-        [[ -f "$boot_env" ]] || continue
-        if [[ ! -f "/etc/${name}.env" ]]; then
-            install -m 600 "$boot_env" "/etc/${name}.env"
-            echo "  Secrets installed from $boot_env -> /etc/${name}.env"
-        elif ! diff -q "$boot_env" "/etc/${name}.env" >/dev/null; then
-            # Never diffed to the log: these are credentials.
-            echo "  WARNING: $boot_env differs from /etc/${name}.env; kept the" >&2
-            echo "           installed one. Delete /etc/${name}.env to adopt the" >&2
-            echo "           boot-partition copy." >&2
-        fi
-        break
     done
 
     # --------------------------------------------------------------------------

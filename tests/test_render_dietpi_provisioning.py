@@ -17,6 +17,7 @@ SPEC.loader.exec_module(provisioning)
 DIETPI_TEMPLATE = """\
 AUTO_SETUP_GLOBAL_PASSWORD=dietpi
 AUTO_SETUP_TIMEZONE=UTC
+AUTO_SETUP_KEYBOARD_LAYOUT=gb
 AUTO_SETUP_NET_ETHERNET_ENABLED=1
 AUTO_SETUP_NET_WIFI_ENABLED=0
 AUTO_SETUP_NET_WIFI_COUNTRY_CODE=GB
@@ -50,6 +51,8 @@ class RenderDietPiProvisioningTests(unittest.TestCase):
                 r"WIFI_PASSWORD='game'\''night'"
                 "\n"
                 "WIFI_COUNTRY='US'\n"
+                "CUBE_WIFI_SSID='LEXA CUBE 2G'\n"
+                "CUBE_WIFI_PASSWORD='second-game-night'\n"
                 "DIETPI_PASSWORD='temporary-password'\n"
                 "DIETPI_HOSTNAME='lexacube'\n"
                 "DIETPI_TIMEZONE='America/Los_Angeles'\n"
@@ -72,11 +75,18 @@ class RenderDietPiProvisioningTests(unittest.TestCase):
             wifi = (output / "dietpi-wifi.txt").read_text(encoding="utf-8")
             self.assertIn("AUTO_SETUP_AUTOMATED=1", dietpi)
             self.assertIn("AUTO_SETUP_NET_WIFI_ENABLED=1", dietpi)
+            self.assertIn("AUTO_SETUP_KEYBOARD_LAYOUT=us", dietpi)
             self.assertIn("AUTO_SETUP_NET_HOSTNAME=lexacube", dietpi)
             self.assertIn("SOFTWARE_DISABLE_SSH_PASSWORD_LOGINS=1", dietpi)
             self.assertIn("AUTO_SETUP_SSH_PUBKEY=ssh-ed25519 ", dietpi)
             self.assertIn("aWIFI_SSID[0]='LEXA CUBE'", wifi)
             self.assertIn(r"aWIFI_KEY[0]='game'\''night'", wifi)
+            self.assertIn("aWIFI_SSID[1]=''", wifi)
+            header = (output / "lexacube-firmware-secrets.h").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('#define SSID_NAME "LEXA CUBE 2G"', header)
+            self.assertIn('#define WIFI_PASSWORD "second-game-night"', header)
             self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o700)
             self.assertEqual(
                 stat.S_IMODE((output / "dietpi-wifi.txt").stat().st_mode), 0o600
@@ -106,6 +116,30 @@ class RenderDietPiProvisioningTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "DietPi warns against"):
+            provisioning.validate(values)
+
+    def test_rejects_unsafe_keyboard_layout(self):
+        values = {
+            "WIFI_SSID": "LEXACUBE",
+            "WIFI_PASSWORD": "game-night",
+            "WIFI_COUNTRY": "US",
+            "DIETPI_PASSWORD": "temporary-password",
+            "DIETPI_KEYBOARD_LAYOUT": "us\nAUTO_SETUP_HEADLESS=0",
+        }
+
+        with self.assertRaisesRegex(ValueError, "DIETPI_KEYBOARD_LAYOUT"):
+            provisioning.validate(values)
+
+    def test_requires_complete_cube_firmware_credentials(self):
+        values = {
+            "WIFI_SSID": "LEXACUBE",
+            "WIFI_PASSWORD": "game-night",
+            "WIFI_COUNTRY": "US",
+            "DIETPI_PASSWORD": "temporary-password",
+            "CUBE_WIFI_SSID": "LEXACUBE-2G",
+        }
+
+        with self.assertRaisesRegex(ValueError, "CUBE_WIFI"):
             provisioning.validate(values)
 
     def test_renders_zai_key_only_when_provided(self):

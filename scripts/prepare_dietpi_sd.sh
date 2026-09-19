@@ -10,6 +10,7 @@ CONFIG="$REPOSITORY_DIR/provisioning.env"
 IMAGE_URL="${DIETPI_IMAGE_URL:-$DEFAULT_IMAGE_URL}"
 CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/Library/Caches}"
 CACHE_DIRECTORY="$CACHE_ROOT/lexacube"
+WRITER="imager"
 DRY_RUN=false
 
 usage() {
@@ -25,6 +26,7 @@ Options:
   --config PATH         Local provisioning env (default: provisioning.env)
   --image-url URL       DietPi .img.xz URL (default: RPi 2/3/4 ARMv8)
   --cache-directory DIR Download cache
+  --writer NAME         Image writer: imager (default) or dd
   --dry-run             Validate and render, but do not download or erase
   --help
 EOF
@@ -57,6 +59,11 @@ while [[ $# -gt 0 ]]; do
             CACHE_DIRECTORY=$2
             shift 2
             ;;
+        --writer)
+            [[ $# -ge 2 ]] || fail "--writer requires a value"
+            WRITER=$2
+            shift 2
+            ;;
         --dry-run)
             DRY_RUN=true
             shift
@@ -78,6 +85,8 @@ done
 [[ -f "$CONFIG" ]] || fail "provisioning file not found: $CONFIG"
 [[ "$IMAGE_URL" == https://dietpi.com/downloads/images/*.img.xz ]] \
     || fail "--image-url must be an official HTTPS DietPi .img.xz URL"
+[[ "$WRITER" == "imager" || "$WRITER" == "dd" ]] \
+    || fail "--writer must be 'imager' or 'dd'"
 
 if [[ "$(uname -s)" != "Darwin" && "$DRY_RUN" != true ]]; then
     fail "this imaging script currently supports macOS only"
@@ -86,6 +95,10 @@ fi
 for command in curl diskutil git python3 shasum sudo; do
     command -v "$command" &> /dev/null || fail "required command not found: $command"
 done
+if [[ "$WRITER" == "dd" ]]; then
+    command -v xz &> /dev/null || fail "--writer dd requires the 'xz' command"
+    command -v dd &> /dev/null || fail "--writer dd requires the 'dd' command"
+fi
 
 case "$CONFIG" in
     "$REPOSITORY_DIR"/*)
@@ -129,16 +142,18 @@ if [[ "$DRY_RUN" == true ]]; then
     exit 0
 fi
 
-if [[ -n "${RPI_IMAGER_BIN:-}" ]]; then
-    IMAGER=$RPI_IMAGER_BIN
-elif command -v rpi-imager &> /dev/null; then
-    IMAGER=$(command -v rpi-imager)
-elif [[ -x "/Applications/Raspberry Pi Imager.app/Contents/MacOS/rpi-imager" ]]; then
-    IMAGER="/Applications/Raspberry Pi Imager.app/Contents/MacOS/rpi-imager"
-else
-    fail "Raspberry Pi Imager is not installed"
+if [[ "$WRITER" == "imager" ]]; then
+    if [[ -n "${RPI_IMAGER_BIN:-}" ]]; then
+        IMAGER=$RPI_IMAGER_BIN
+    elif command -v rpi-imager &> /dev/null; then
+        IMAGER=$(command -v rpi-imager)
+    elif [[ -x "/Applications/Raspberry Pi Imager.app/Contents/MacOS/rpi-imager" ]]; then
+        IMAGER="/Applications/Raspberry Pi Imager.app/Contents/MacOS/rpi-imager"
+    else
+        fail "Raspberry Pi Imager is not installed"
+    fi
+    [[ -x "$IMAGER" ]] || fail "Raspberry Pi Imager is not executable: $IMAGER"
 fi
-[[ -x "$IMAGER" ]] || fail "Raspberry Pi Imager is not executable: $IMAGER"
 
 echo "This will permanently erase all data on $DEVICE."
 read -r -p "Type 'ERASE $DEVICE' to continue: " CONFIRMATION
@@ -172,8 +187,17 @@ else
     echo "Using verified cached image: $IMAGE_PATH"
 fi
 
-echo "Flashing $DEVICE with Raspberry Pi Imager..."
-sudo "$IMAGER" --cli --disable-eject "$IMAGE_PATH" "$DEVICE"
+if [[ "$WRITER" == "imager" ]]; then
+    echo "Flashing $DEVICE with Raspberry Pi Imager..."
+    sudo "$IMAGER" --cli --disable-eject "$IMAGE_PATH" "$DEVICE"
+else
+    RAW_DEVICE="/dev/r${DEVICE#/dev/}"
+    echo "Unmounting $DEVICE before raw write..."
+    sudo diskutil unmountDisk force "$DEVICE"
+    echo "Flashing $RAW_DEVICE with xz and dd (this may take several minutes)..."
+    xz --decompress --stdout "$IMAGE_PATH" | sudo dd of="$RAW_DEVICE" bs=4m
+    sync
+fi
 
 BOOT_DEVICE="${DEVICE}s1"
 diskutil mount "$BOOT_DEVICE" > /dev/null 2>&1 \
@@ -199,6 +223,11 @@ cp "$WORK_DIRECTORY/rendered/Automation_Custom_Script.sh" \
 if [[ -f "$WORK_DIRECTORY/rendered/lexacube-zai-key" ]]; then
     cp "$WORK_DIRECTORY/rendered/lexacube-zai-key" "$BOOT_MOUNT/lexacube-zai-key"
     echo "  Z.ai key staged; bootstrap.sh installs it and removes it from /boot."
+fi
+if [[ -f "$WORK_DIRECTORY/rendered/lexacube-firmware-secrets.h" ]]; then
+    cp "$WORK_DIRECTORY/rendered/lexacube-firmware-secrets.h" \
+        "$BOOT_MOUNT/lexacube-firmware-secrets.h"
+    echo "  Cube firmware credentials staged; bootstrap.sh installs and removes them."
 fi
 sync
 diskutil eject "$DEVICE" > /dev/null
