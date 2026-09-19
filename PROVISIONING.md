@@ -228,11 +228,9 @@ diskutil eject /dev/diskN
 ```
 
 Use the mount point printed by `diskutil`; its volume name is not guaranteed.
-The FAT boot partition cannot enforce Unix permissions, so do not leave another
-copy of these files there after provisioning. Bootstrap installs them under
-`/etc` with mode 0600, but unlike the staged Z.ai key it does not remove the
-boot-partition copies automatically. Remove them after the first successful
-boot, as shown below.
+The FAT boot partition cannot enforce Unix permissions. Bootstrap installs
+these files under `/etc` with mode 0600 before dependency builds and removes
+the boot-partition copies automatically.
 
 ### 4. Boot and verify the replacement
 
@@ -260,13 +258,11 @@ sudo journalctl -u lexacube -b --no-pager
 ```
 
 Confirm that `192.168.8.247/24` is present. If an application credentials file
-was staged, confirm that it was installed and then remove the boot copy:
+was staged, confirm that it was installed with restrictive permissions:
 
 ```sh
 sudo stat -c '%a %n' /etc/lexacube.env 2>/dev/null || true
 sudo stat -c '%a %n' /etc/knockstrip.env 2>/dev/null || true
-sudo rm -f /boot/firmware/lexacube.env /boot/lexacube.env
-sudo rm -f /boot/firmware/knockstrip.env /boot/knockstrip.env
 ```
 
 The unattended first boot selects only `lexacube`. If this machine also uses
