@@ -16,6 +16,24 @@ if ! command -v yq &> /dev/null; then
     apt-get install -y --no-install-recommends yq
 fi
 
+# Cube WiFi credentials can be supplied at imaging time without ever teaching
+# the Pi to associate with that network. The FAT boot partition cannot retain
+# secure permissions, so consume the generated header into /etc before the
+# dependency loop asks for it, then remove the boot copy.
+BOOT_FIRMWARE_SECRETS="/boot/firmware/lexacube-firmware-secrets.h"
+if [[ ! -f "$BOOT_FIRMWARE_SECRETS" ]]; then
+    BOOT_FIRMWARE_SECRETS="/boot/lexacube-firmware-secrets.h"
+fi
+if [[ -f "$BOOT_FIRMWARE_SECRETS" ]]; then
+    if [[ -e /etc/lexacube-firmware-secrets.h ]]; then
+        echo "Preserving existing /etc/lexacube-firmware-secrets.h"
+    else
+        install -D -m 600 "$BOOT_FIRMWARE_SECRETS" /etc/lexacube-firmware-secrets.h
+        echo "Installed staged cube firmware credentials"
+    fi
+    rm -f "$BOOT_FIRMWARE_SECRETS"
+fi
+
 app_is_selected() {
     local candidate=$1
     local selected_app

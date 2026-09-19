@@ -84,12 +84,28 @@ def validate(values: dict[str, str]) -> None:
             'DIETPI_PASSWORD cannot contain characters DietPi warns against: $"|\\'
         )
 
+    cube_ssid = values.get("CUBE_WIFI_SSID", "")
+    cube_password = values.get("CUBE_WIFI_PASSWORD", "")
+    if bool(cube_ssid) != bool(cube_password):
+        raise ValueError(
+            "CUBE_WIFI_SSID and CUBE_WIFI_PASSWORD must be set together"
+        )
+    if cube_password == "replace-me":
+        raise ValueError("CUBE_WIFI_PASSWORD still contains the example placeholder")
+
+    keyboard_layout = values.get("DIETPI_KEYBOARD_LAYOUT", "us")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", keyboard_layout):
+        raise ValueError("DIETPI_KEYBOARD_LAYOUT must be a keyboard-layout name")
+
 
 def render_dietpi(
     template: str, values: dict[str, str], public_key: str | None
 ) -> str:
     settings = {
         "AUTO_SETUP_GLOBAL_PASSWORD": required(values, "DIETPI_PASSWORD"),
+        # DietPi's stock template defaults to `gb`.  This project is
+        # provisioned from US keyboards unless the local env says otherwise.
+        "AUTO_SETUP_KEYBOARD_LAYOUT": values.get("DIETPI_KEYBOARD_LAYOUT", "us"),
         "AUTO_SETUP_NET_ETHERNET_ENABLED": "1",
         "AUTO_SETUP_NET_WIFI_ENABLED": "1",
         "AUTO_SETUP_NET_WIFI_COUNTRY_CODE": required(values, "WIFI_COUNTRY"),
@@ -114,11 +130,27 @@ def render_wifi(template: str, values: dict[str, str]) -> str:
     rendered = replace_setting(
         template, "aWIFI_SSID[0]", shell_single_quote(required(values, "WIFI_SSID"))
     )
-    return replace_setting(
+    rendered = replace_setting(
         rendered,
         "aWIFI_KEY[0]",
         shell_single_quote(required(values, "WIFI_PASSWORD")),
     )
+    return rendered
+
+
+def c_string(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
+
+
+def render_cube_firmware_secrets(values: dict[str, str]) -> str:
+    ssid = c_string(values["CUBE_WIFI_SSID"])
+    password = c_string(values["CUBE_WIFI_PASSWORD"])
+    return f'''// Generated from provisioning.env by pi-deploy.\n#pragma once\n\n#define SSID_NAME "{ssid}"\n#define WIFI_PASSWORD "{password}"\n#define SSID_NAME_PORTABLE "{ssid}"\n#define WIFI_PASSWORD_PORTABLE "{password}"\n'''
 
 
 def read_public_key(values: dict[str, str]) -> str | None:
@@ -158,6 +190,10 @@ def render_files(
     # place it can be given permissions -- the boot partition is FAT32.
     if values.get("ZAI_API_KEY"):
         outputs[output_directory / "lexacube-zai-key"] = values["ZAI_API_KEY"] + "\n"
+    if values.get("CUBE_WIFI_SSID"):
+        outputs[output_directory / "lexacube-firmware-secrets.h"] = (
+            render_cube_firmware_secrets(values)
+        )
     for path, content in outputs.items():
         path.write_text(content, encoding="utf-8", newline="\n")
         os.chmod(path, 0o600)
