@@ -225,6 +225,11 @@ if [[ -f "$WORK_DIRECTORY/rendered/lexacube-zai-key" ]]; then
     cp "$WORK_DIRECTORY/rendered/lexacube-zai-key" "$BOOT_MOUNT/lexacube-zai-key"
     echo "  Z.ai key staged; bootstrap.sh installs it and removes it from /boot."
 fi
+for STAGED_KEY in "$WORK_DIRECTORY"/rendered/github-deploy-key-*; do
+    [[ -e "$STAGED_KEY" ]] || break
+    cp "$STAGED_KEY" "$BOOT_MOUNT/$(basename "$STAGED_KEY")"
+    echo "  $(basename "$STAGED_KEY") staged; bootstrap.sh installs it and removes it from /boot."
+done
 for STAGED_ENV in "$WORK_DIRECTORY"/rendered/*.env; do
     [[ -e "$STAGED_ENV" ]] || break
     cp "$STAGED_ENV" "$BOOT_MOUNT/$(basename "$STAGED_ENV")"

@@ -193,6 +193,118 @@ convert_https_to_ssh() {
     echo "$repo" | sed -E 's,https://github.com/([^/]+)/([^/]+)\.git.*,git@github.com:\1/\2,;s,https://github.com/([^/]+)/([^/]+)$,git@github.com:\1/\2,'
 }
 
+# GitHub refuses the same deploy key on a second repository ("key is already in
+# use"), so a Pi that reads two private repos needs one key per repo — and a
+# single global identity cannot express that. Each key gets its own
+# `github-<owner>-<repo>` host alias in root's SSH config, and git `insteadOf`
+# rules point that repository at the alias. The rules cover both the HTTPS form
+# written in apps.yaml and the `git@github.com:` form git_clone_or_update
+# rewrites to, so the right key is used whichever path that function takes.
+#
+# Keys are staged on the boot partition as `github-deploy-key-<owner>.<repo>`
+# and installed here, then the boot copy is removed: FAT32 cannot hold 0600.
+# Owner and repository split on the first dot, which a GitHub owner name cannot
+# contain and a repository name can — so a hyphenated name on either side, which
+# both stephen5ng/nfc-control and this repo have, parses unambiguously.
+DEPLOY_KEY_DIR="/root/.ssh/github-deploy-keys"
+
+install_staged_deploy_keys() {
+    local boot_dir staged owner_repo
+
+    for boot_dir in /boot/firmware /boot; do
+        for staged in "$boot_dir"/github-deploy-key-*; do
+            [[ -f "$staged" ]] || continue
+            owner_repo=${staged##*/github-deploy-key-}
+            if [[ "$owner_repo" != *.* ]]; then
+                echo "Ignoring $staged: expected github-deploy-key-<owner>.<repo>" >&2
+                continue
+            fi
+            mkdir -p "$DEPLOY_KEY_DIR"
+            chmod 700 "$DEPLOY_KEY_DIR"
+            if [[ ! -f "$DEPLOY_KEY_DIR/$owner_repo" ]]; then
+                install -m 600 "$staged" "$DEPLOY_KEY_DIR/$owner_repo"
+                echo "Installed staged deploy key for ${owner_repo/./\/}"
+            fi
+            rm -f "$staged"
+        done
+    done
+}
+
+# Drops an existing stanza for this alias, whatever wrote it: a stanza from an
+# older bootstrap has no host-key options, and appending a second `Host` block
+# with the same name would leave ssh reading the first one.
+#
+# A stanza ends at the next `Host` OR `Match` directive -- both open one in
+# ssh_config(5), so resetting only on `Host` would swallow a `Match` block that
+# happens to follow the alias, taking unrelated configuration with it. Keyword
+# matching is case-insensitive and ignores leading whitespace, as ssh's own
+# parser does, and only a stanza naming this alias and nothing else is removed:
+# a hand-written `Host <alias> something-else` belongs to its author.
+remove_ssh_alias() {
+    local alias_host=$1 config="/root/.ssh/config"
+
+    [[ -f "$config" ]] || return 0
+    awk -v alias="$alias_host" '
+        tolower($1) == "host"  { skip = (NF == 2 && $2 == alias) }
+        tolower($1) == "match" { skip = 0 }
+        !skip
+    ' "$config" > "$config.pi-deploy-tmp" || return 1
+    mv "$config.pi-deploy-tmp" "$config"
+    chmod 600 "$config"
+}
+
+# Configures every installed key, not only the ones staged this run: a rerun
+# must repair the SSH config and git rules after the boot copies are gone.
+configure_github_deploy_keys() {
+    local key owner_repo owner repo alias_host
+
+    install_staged_deploy_keys
+
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+
+    for key in "$DEPLOY_KEY_DIR"/*; do
+        [[ -f "$key" ]] || continue
+        owner_repo=${key##*/}
+        owner=${owner_repo%%.*}
+        repo=${owner_repo#*.}
+        alias_host="github-$owner-$repo"
+
+        # Rewritten on every run rather than written once when absent. A Pi
+        # bootstrapped by an earlier version carries a stanza with no host-key
+        # options -- exactly the box whose first private clone failed -- and
+        # skipping an existing stanza would preserve that failure forever.
+        #
+        # The host-key options belong in the alias, not only in
+        # git_clone_or_update's GIT_SSH_COMMAND. `github_ssh_auth_works` tests
+        # `git@github.com`, which a per-repo deploy key cannot authenticate,
+        # so use_ssh stays false, the clone keeps its HTTPS spelling and
+        # reaches SSH through `insteadOf` instead -- with no GIT_SSH_COMMAND,
+        # and so no $GITHUB_KNOWN_HOSTS. On a Pi whose /root/.ssh/known_hosts
+        # has never seen github.com, that clone fails host key verification.
+        remove_ssh_alias "$alias_host"
+        cat >> /root/.ssh/config <<EOF
+Host $alias_host
+    HostName github.com
+    User git
+    IdentityFile $key
+    IdentitiesOnly yes
+    UserKnownHostsFile $GITHUB_KNOWN_HOSTS
+    StrictHostKeyChecking yes
+
+EOF
+        echo "Configured SSH alias $alias_host for $owner/$repo"
+        chmod 600 /root/.ssh/config
+
+        git config --global --replace-all \
+            "url.git@$alias_host:$owner/$repo.insteadOf" \
+            "https://github.com/$owner/$repo"
+        git config --global --add \
+            "url.git@$alias_host:$owner/$repo.insteadOf" \
+            "git@github.com:$owner/$repo"
+    done
+}
+
 setup_ssh_for_root() {
     local dietpi_home="/home/dietpi"
     local root_ssh="/root/.ssh"
@@ -360,7 +472,10 @@ for selected_app in "${SELECTED_APPS[@]}"; do
 done
 
 configure_github_api_token
+# configure_github_deploy_keys runs after setup_ssh_for_root, which writes the
+# pinned $GITHUB_KNOWN_HOSTS the alias blocks point at.
 setup_ssh_for_root
+configure_github_deploy_keys
 
 if [[ ${#SELECTED_APPS[@]} -gt 0 ]]; then
     echo "=== Bootstrapping ${SELECTED_APPS[*]} from $CONFIG ==="
