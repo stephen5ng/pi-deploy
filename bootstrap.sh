@@ -508,9 +508,21 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
         if ! command -v uv &> /dev/null; then
             echo "  uv not found, installing..."
             curl -LsSf https://astral.sh/uv/install.sh | sh
-            export PATH="$HOME/.local/bin:$PATH"
         fi
-        (cd "$path" && uv sync --all-extras)
+        # uv's installer puts the binary here, and a dependency's
+        # install_python_cmd needs it later in this run too.
+        export PATH="$HOME/.local/bin:$PATH"
+        # uv defaults its environment to `<project>/.venv`, but everything
+        # downstream is named: apps.yaml's exec, nfc-control reusing lexacube's
+        # interpreter, and the pygame.libs search below all spell out
+        # `$venv_name`. Point uv at that directory instead of renaming four
+        # call sites after it.
+        if [[ -n "$venv_name" ]]; then
+            (cd "$path" && UV_PROJECT_ENVIRONMENT="$path/$venv_name" \
+                uv sync --all-extras)
+        else
+            (cd "$path" && uv sync --all-extras)
+        fi
     elif [[ -n "$venv_name" && -f "$path/requirements.txt" ]]; then
         if [[ ! -f "$path/$venv_name/bin/activate" ]]; then
             echo "Creating virtual environment..."

@@ -107,7 +107,10 @@ apps:
     dependencies:
       - repo: "https://github.com/hzeller/rpi-rgb-led-matrix"
         path: /opt/rpi-rgb-led-matrix
-        install_python_cmd: "pip install scikit-build-core cython && pip install {path}"
+        # uv, not pip: a uv-managed environment has no pip in it. Bootstrap
+        # activates the venv before running this, and uv installs into the
+        # active VIRTUAL_ENV.
+        install_python_cmd: "uv pip install scikit-build-core cython && uv pip install {path}"
       - repo: "https://github.com/stephen5ng/cube-pn5180"
         path: /opt/cube-pn5180
         submodules: true
@@ -122,7 +125,7 @@ apps:
           # cannot join. The failure is cubes that flash fine and then never
           # associate, with nothing on the Pi to say why.
           ssid: FunAcross
-        install_python_cmd: "pip install platformio"
+        install_python_cmd: "uv pip install platformio"
         # Pre-fetch the ESP32 platform, Xtensa toolchain and lib_deps declared in
         # the firmware's platformio.ini, so a freshly bootstrapped Pi can build
         # firmware offline instead of downloading ~1GB on someone's first
