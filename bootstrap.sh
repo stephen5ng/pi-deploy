@@ -193,6 +193,82 @@ convert_https_to_ssh() {
     echo "$repo" | sed -E 's,https://github.com/([^/]+)/([^/]+)\.git.*,git@github.com:\1/\2,;s,https://github.com/([^/]+)/([^/]+)$,git@github.com:\1/\2,'
 }
 
+# GitHub refuses the same deploy key on a second repository ("key is already in
+# use"), so a Pi that reads two private repos needs one key per repo — and a
+# single global identity cannot express that. Each key gets its own
+# `github-<owner>-<repo>` host alias in root's SSH config, and git `insteadOf`
+# rules point that repository at the alias. The rules cover both the HTTPS form
+# written in apps.yaml and the `git@github.com:` form git_clone_or_update
+# rewrites to, so the right key is used whichever path that function takes.
+#
+# Keys are staged on the boot partition as `github-deploy-key-<owner>.<repo>`
+# and installed here, then the boot copy is removed: FAT32 cannot hold 0600.
+# Owner and repository split on the first dot, which a GitHub owner name cannot
+# contain and a repository name can — so a hyphenated name on either side, which
+# both stephen5ng/nfc-control and this repo have, parses unambiguously.
+DEPLOY_KEY_DIR="/root/.ssh/github-deploy-keys"
+
+install_staged_deploy_keys() {
+    local boot_dir staged owner_repo
+
+    for boot_dir in /boot/firmware /boot; do
+        for staged in "$boot_dir"/github-deploy-key-*; do
+            [[ -f "$staged" ]] || continue
+            owner_repo=${staged##*/github-deploy-key-}
+            if [[ "$owner_repo" != *.* ]]; then
+                echo "Ignoring $staged: expected github-deploy-key-<owner>.<repo>" >&2
+                continue
+            fi
+            mkdir -p "$DEPLOY_KEY_DIR"
+            chmod 700 "$DEPLOY_KEY_DIR"
+            if [[ ! -f "$DEPLOY_KEY_DIR/$owner_repo" ]]; then
+                install -m 600 "$staged" "$DEPLOY_KEY_DIR/$owner_repo"
+                echo "Installed staged deploy key for ${owner_repo/./\/}"
+            fi
+            rm -f "$staged"
+        done
+    done
+}
+
+# Configures every installed key, not only the ones staged this run: a rerun
+# must repair the SSH config and git rules after the boot copies are gone.
+configure_github_deploy_keys() {
+    local key owner_repo owner repo alias_host
+
+    install_staged_deploy_keys
+
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+
+    for key in "$DEPLOY_KEY_DIR"/*; do
+        [[ -f "$key" ]] || continue
+        owner_repo=${key##*/}
+        owner=${owner_repo%%.*}
+        repo=${owner_repo#*.}
+        alias_host="github-$owner-$repo"
+
+        if ! grep -q "^Host $alias_host\$" /root/.ssh/config 2>/dev/null; then
+            cat >> /root/.ssh/config <<EOF
+Host $alias_host
+    HostName github.com
+    User git
+    IdentityFile $key
+    IdentitiesOnly yes
+
+EOF
+            echo "Configured SSH alias $alias_host for $owner/$repo"
+        fi
+        chmod 600 /root/.ssh/config
+
+        git config --global --replace-all \
+            "url.git@$alias_host:$owner/$repo.insteadOf" \
+            "https://github.com/$owner/$repo"
+        git config --global --add \
+            "url.git@$alias_host:$owner/$repo.insteadOf" \
+            "git@github.com:$owner/$repo"
+    done
+}
+
 setup_ssh_for_root() {
     local dietpi_home="/home/dietpi"
     local root_ssh="/root/.ssh"
@@ -361,6 +437,7 @@ done
 
 configure_github_api_token
 setup_ssh_for_root
+configure_github_deploy_keys
 
 if [[ ${#SELECTED_APPS[@]} -gt 0 ]]; then
     echo "=== Bootstrapping ${SELECTED_APPS[*]} from $CONFIG ==="

@@ -180,6 +180,21 @@ When modifying application configuration:
   `/boot/knockstrip.env` if present (see Per-Rig Files and Secrets)
 - `station_ids.yaml` and `config.local.yaml` are provisioned from `rig_files`
 
+### Private Repository Access
+
+The application repos are private, so the Pi needs a GitHub credential before
+any clone. GitHub rejects the same deploy key on a second repository, which is
+why there is one key per repo rather than one key for the box:
+`scripts/make_deploy_key.sh owner/repo` mints and registers it into
+`$SECRETS_DIR/github-deploy-keys/<owner>.<repo>`, SD prep stages it, and
+`configure_github_deploy_keys()` in bootstrap installs it with a
+`github-<owner>-<repo>` SSH alias plus git `insteadOf` rules for **both** the
+HTTPS form in apps.yaml and the `git@github.com:` form `git_clone_or_update`
+rewrites to — either path has to reach the right key. Owner and repo split on
+the first dot, which a GitHub owner name cannot contain. The configuration pass
+runs over every installed key, not only the ones staged this run, so a rerun
+repairs an SSH config lost after the boot copies are gone.
+
 ### Per-Rig Files and Secrets
 
 Some values describe *this installation* and are gitignored in the app repo, so a

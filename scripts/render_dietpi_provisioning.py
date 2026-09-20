@@ -223,6 +223,32 @@ def stage_app_env_files(
     return staged
 
 
+def stage_github_deploy_keys(values: dict[str, str], output_directory: Path) -> list[str]:
+    """Copy per-repository GitHub deploy keys so they reach /boot.
+
+    Without one of these a fresh Pi cannot clone a private application repo at
+    all, and bootstrap stops at the first clone. GitHub rejects the same deploy
+    key on a second repository, so there is one key per repo, named
+    `<owner>.<repo>`; `scripts/make_deploy_key.sh` creates and registers them.
+    """
+    directory = secrets_directory(values) / "github-deploy-keys"
+    if not directory.is_dir():
+        return []
+
+    staged: list[str] = []
+    for source in sorted(directory.iterdir()):
+        if not source.is_file() or source.name.endswith(".pub"):
+            continue
+        if "." not in source.name:
+            print(f"Warning: ignoring {source}; expected <owner>.<repo>")
+            continue
+        destination = output_directory / f"github-deploy-key-{source.name}"
+        destination.write_bytes(source.read_bytes())
+        os.chmod(destination, 0o600)
+        staged.append(source.name)
+    return staged
+
+
 def render_files(
     env_path: Path,
     dietpi_template: Path,
@@ -260,6 +286,8 @@ def render_files(
 
     for name in stage_app_env_files(values, output_directory, apps_config):
         print(f"Staged per-rig secrets: {name}")
+    for name in stage_github_deploy_keys(values, output_directory):
+        print(f"Staged GitHub deploy key: {name}")
 
 
 def parse_args() -> argparse.Namespace:

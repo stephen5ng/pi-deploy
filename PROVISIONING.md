@@ -189,6 +189,25 @@ SSH public key. Add `ZAI_API_KEY` if it should be installed automatically:
 ${EDITOR:-vi} provisioning.env
 ```
 
+### GitHub deploy keys for the private application repos
+
+`cubes` and `knockstrip` are private, so a Pi with no GitHub credential cannot
+clone them and bootstrap stops at the first clone. GitHub refuses the same
+deploy key on a second repository, so each private repo gets its own read-only
+key:
+
+```sh
+./scripts/make_deploy_key.sh stephen5ng/cubes stephen5ng/knockstrip
+```
+
+The keys are written to `$SECRETS_DIR/github-deploy-keys/<owner>.<repo>` and
+registered on the repository (this needs `gh` logged in with admin on the
+repo). They are reused by every later flash: `prepare_dietpi_sd.sh` stages them
+on the boot partition, and `bootstrap.sh` installs each one under
+`/root/.ssh/github-deploy-keys`, gives it a `github-<owner>-<repo>` SSH host
+alias and points that repository's URL at the alias with git `insteadOf`, then
+deletes the boot copy. Nothing needs doing on the Pi.
+
 Per-rig application secrets live in a directory outside the repository,
 `~/.lexacube-secrets` by default (`SECRETS_DIR` in `provisioning.env`). Every
 `<app>.env` file found there is staged on the boot partition, and `bootstrap.sh`
