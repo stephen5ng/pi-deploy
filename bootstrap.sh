@@ -886,7 +886,7 @@ Upholds=$name.service
 Type=oneshot
 RemainAfterExit=yes
 # Retry rather than give up. A pinned interface with no carrier cannot be
-# arping'd, so `start` exits non-zero, and without this the unit stays failed
+# arping'd, so \`start\` exits non-zero, and without this the unit stays failed
 # until someone runs reset-failed by hand -- on a headless box, at an event.
 # Restart= is permitted on Type=oneshot for on-failure (verified on systemd
 # 257); the unit reports "activating" between attempts, which is honest: the
