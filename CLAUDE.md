@@ -204,9 +204,11 @@ Policy is **write if absent, warn if different**: an existing file is never
 clobbered (someone may be mid-way through tuning on the box), but a difference
 is reported with a diff on every run so drift is visible rather than silent.
 
-**`/boot/<name>.env`** — secrets, which cannot be defaulted or committed. Drop the
-file on the boot partition during SD prep, the same way `dietpi.txt` and
-`dietpi-wifi.txt` are placed; bootstrap installs it to `/etc/<name>.env` (mode
+**`/boot/<name>.env`** — secrets, which cannot be defaulted or committed. Keep
+them in `SECRETS_DIR` on the Mac (`~/.lexacube-secrets` by default);
+`prepare_dietpi_sd.sh` stages every `*.env` found there onto the boot partition,
+the same way `dietpi.txt` and `dietpi-wifi.txt` are placed, and bootstrap
+installs it to `/etc/<name>.env` (mode
 0600), which the generated unit already reads via `EnvironmentFile`. See
 `knockstrip.env.template.txt` and `lexacube.env.template.txt`. Same
 write-if-absent policy, and the diff is never printed.
