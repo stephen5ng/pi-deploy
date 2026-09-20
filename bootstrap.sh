@@ -248,12 +248,22 @@ configure_github_deploy_keys() {
         alias_host="github-$owner-$repo"
 
         if ! grep -q "^Host $alias_host\$" /root/.ssh/config 2>/dev/null; then
+            # The host-key options belong in the alias, not only in
+            # git_clone_or_update's GIT_SSH_COMMAND. `github_ssh_auth_works`
+            # tests `git@github.com`, which a per-repo deploy key cannot
+            # authenticate, so use_ssh stays false, the clone keeps its HTTPS
+            # spelling and reaches SSH through `insteadOf` instead -- with no
+            # GIT_SSH_COMMAND, and so no $GITHUB_KNOWN_HOSTS. On a fresh Pi,
+            # whose /root/.ssh/known_hosts has never seen github.com, the
+            # first private clone then fails host key verification.
             cat >> /root/.ssh/config <<EOF
 Host $alias_host
     HostName github.com
     User git
     IdentityFile $key
     IdentitiesOnly yes
+    UserKnownHostsFile $GITHUB_KNOWN_HOSTS
+    StrictHostKeyChecking yes
 
 EOF
             echo "Configured SSH alias $alias_host for $owner/$repo"
@@ -436,6 +446,8 @@ for selected_app in "${SELECTED_APPS[@]}"; do
 done
 
 configure_github_api_token
+# configure_github_deploy_keys runs after setup_ssh_for_root, which writes the
+# pinned $GITHUB_KNOWN_HOSTS the alias blocks point at.
 setup_ssh_for_root
 configure_github_deploy_keys
 

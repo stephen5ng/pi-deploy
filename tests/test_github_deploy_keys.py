@@ -34,6 +34,7 @@ def run_configure(root: Path) -> subprocess.CompletedProcess:
     start = source.index("DEPLOY_KEY_DIR=")
     end = source.index("setup_ssh_for_root() {")
     functions = source[start:end].replace("/root/.ssh", f"{root}/root/.ssh")
+    functions = functions.replace("$GITHUB_KNOWN_HOSTS", f"{root}/root/.ssh/github_known_hosts")
     functions = functions.replace("/boot/firmware", f"{root}/boot/firmware")
     functions = functions.replace("/boot", f"{root}/boot")
 
@@ -77,6 +78,42 @@ class ConfigureDeployKeysTests(unittest.TestCase):
         self.assertIn("Host github-stephen5ng-nfc-control", config)
         self.assertIn(f"IdentityFile {installed}", config)
         self.assertIn("IdentitiesOnly yes", config)
+
+    def test_the_alias_pins_githubs_host_key(self):
+        """The rewritten clone gets no GIT_SSH_COMMAND, so the alias must carry
+        the managed known_hosts itself.
+
+        `github_ssh_auth_works` tests `git@github.com`, which a per-repo deploy
+        key cannot authenticate, so `use_ssh` stays false and the clone keeps
+        its HTTPS spelling -- reaching SSH only through `insteadOf`, outside
+        git_clone_or_update's GIT_SSH_COMMAND. On a fresh Pi that meant host
+        key verification failed on the first private clone.
+        """
+        self.stage("stephen5ng.cubes")
+        self.assertEqual(run_configure(self.root).returncode, 0)
+        config = self.root / "root/.ssh/config"
+
+        effective = subprocess.run(
+            ["ssh", "-G", "-F", str(config), "github-stephen5ng-cubes"],
+            capture_output=True,
+            text=True,
+        ).stdout.lower()
+
+        self.assertIn("hostname github.com", effective)
+        # ssh -G normalises `yes` to `true`.
+        self.assertIn("stricthostkeychecking true", effective)
+        self.assertIn(
+            f"userknownhostsfile {self.root}/root/.ssh/github_known_hosts".lower(),
+            effective,
+        )
+
+    def test_the_known_hosts_file_is_written_before_the_aliases_use_it(self):
+        source = (REPOSITORY / "bootstrap.sh").read_text(encoding="utf-8")
+
+        self.assertLess(
+            source.index("\nsetup_ssh_for_root\n"),
+            source.index("\nconfigure_github_deploy_keys\n"),
+        )
 
     def test_both_url_forms_are_rewritten_to_the_repository_alias(self):
         self.stage("stephen5ng.cubes")
