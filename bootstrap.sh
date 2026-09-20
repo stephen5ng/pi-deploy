@@ -232,14 +232,21 @@ install_staged_deploy_keys() {
 
 # Drops an existing stanza for this alias, whatever wrote it: a stanza from an
 # older bootstrap has no host-key options, and appending a second `Host` block
-# with the same name would leave ssh reading the first one. Everything from the
-# matching `Host` line until the next one at column 0 belongs to that stanza.
+# with the same name would leave ssh reading the first one.
+#
+# A stanza ends at the next `Host` OR `Match` directive -- both open one in
+# ssh_config(5), so resetting only on `Host` would swallow a `Match` block that
+# happens to follow the alias, taking unrelated configuration with it. Keyword
+# matching is case-insensitive and ignores leading whitespace, as ssh's own
+# parser does, and only a stanza naming this alias and nothing else is removed:
+# a hand-written `Host <alias> something-else` belongs to its author.
 remove_ssh_alias() {
     local alias_host=$1 config="/root/.ssh/config"
 
     [[ -f "$config" ]] || return 0
     awk -v alias="$alias_host" '
-        /^Host[ \t]/ { skip = ($2 == alias) }
+        tolower($1) == "host"  { skip = (NF == 2 && $2 == alias) }
+        tolower($1) == "match" { skip = 0 }
         !skip
     ' "$config" > "$config.pi-deploy-tmp" || return 1
     mv "$config.pi-deploy-tmp" "$config"

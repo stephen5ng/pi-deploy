@@ -201,6 +201,53 @@ class ConfigureDeployKeysTests(unittest.TestCase):
         self.assertIn("Host other-host", text)
         self.assertIn("HostName example.invalid", text)
 
+    def test_a_match_block_after_the_alias_survives_the_repair(self):
+        """`Match` opens a stanza too, so it ends the one being removed.
+
+        Resetting only on `Host` deleted everything from the stale alias to the
+        next `Host` line — taking a trailing `Match` block, and anything after
+        it, with it.
+        """
+        keys = self.root / "root/.ssh/github-deploy-keys"
+        keys.mkdir(parents=True)
+        (keys / "stephen5ng.cubes").write_text("KEY\n")
+        config = self.root / "root/.ssh/config"
+        config.write_text(
+            "Host github-stephen5ng-cubes\n"
+            "    HostName github.com\n"
+            "    IdentitiesOnly yes\n"
+            "\n"
+            "Match exec \"test -f /etc/on-the-rig\"\n"
+            "    ForwardAgent yes\n"
+        )
+
+        result = run_configure(self.root)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = config.read_text()
+        self.assertIn('Match exec "test -f /etc/on-the-rig"', text)
+        self.assertIn("ForwardAgent yes", text)
+        self.assertEqual(text.count("Host github-stephen5ng-cubes"), 1)
+
+    def test_a_hand_written_multi_pattern_stanza_is_left_alone(self):
+        # `Host <alias> other-name` belongs to whoever wrote it; removing it
+        # would silently drop `other-name`'s configuration as well.
+        keys = self.root / "root/.ssh/github-deploy-keys"
+        keys.mkdir(parents=True)
+        (keys / "stephen5ng.cubes").write_text("KEY\n")
+        config = self.root / "root/.ssh/config"
+        config.write_text(
+            "Host github-stephen5ng-cubes other-name\n"
+            "    ForwardAgent yes\n"
+        )
+
+        self.assertEqual(run_configure(self.root).returncode, 0)
+
+        self.assertIn(
+            "Host github-stephen5ng-cubes other-name",
+            config.read_text(),
+        )
+
     def test_rerun_does_not_duplicate_the_alias_block(self):
         self.stage("stephen5ng.cubes")
         self.assertEqual(run_configure(self.root).returncode, 0)
