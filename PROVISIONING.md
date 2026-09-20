@@ -96,6 +96,25 @@ for both users, so the `claude-ant` and `claude-zai` aliases work on a fresh
 flash. To set the key later instead, write it to `~/.claude-switch/zai-key` by
 hand — bootstrap never overwrites an installed key.
 
+## Word sound assets and the GitHub API token
+
+The two word-recording corpora are not in git: they are a release
+(`audio-assets`) on the **private** `stephen5ng/cubes` repo, and
+`tools/download_audio_release.sh` in that repo is what refreshes them as they
+change. A deploy key authenticates git over SSH and cannot reach
+`api.github.com` at all, so the Pi needs a separate, read-only API credential
+to fetch them:
+
+```sh
+# a fine-grained token with Contents: Read-only on stephen5ng/cubes
+printf '%s\n' "$GITHUB_TOKEN" > /boot/github-api-token
+```
+
+Bootstrap installs it to `/etc/github-api-token` (0600), deletes the boot copy,
+and uses it for both the release query and each asset download. Without it the
+Pi still finishes bootstrapping and the game still runs — it simply speaks no
+words, and the run says so.
+
 ## Replacing an existing boot SSD
 
 Prefer a clean DietPi installation over cloning the old SSD. A clean install
