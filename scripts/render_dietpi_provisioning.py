@@ -164,6 +164,38 @@ def read_public_key(values: dict[str, str]) -> str | None:
     return key
 
 
+def secrets_directory(values: dict[str, str]) -> Path:
+    return Path(values.get("SECRETS_DIR") or "~/.lexacube-secrets").expanduser()
+
+
+def stage_app_env_files(values: dict[str, str], output_directory: Path) -> list[str]:
+    """Copy per-rig `<app>.env` secrets so they can be written to /boot.
+
+    These files are gitignored in the app repos and cannot be defaulted, so a
+    reflash loses them: lexacube then plays while recording no analytics at
+    all, and knockstrip refuses to start. Keeping them in a directory outside
+    the repository is what lets a fresh image pick them up unattended.
+    """
+    directory = secrets_directory(values)
+    if not directory.is_dir():
+        print(
+            f"Warning: no per-rig secrets directory at {directory}; "
+            "no <app>.env files will be staged."
+        )
+        return []
+
+    staged: list[str] = []
+    for source in sorted(directory.glob("*.env")):
+        destination = output_directory / source.name
+        destination.write_bytes(source.read_bytes())
+        os.chmod(destination, 0o600)
+        staged.append(source.name)
+
+    if not staged:
+        print(f"Warning: {directory} holds no *.env files; none will be staged.")
+    return staged
+
+
 def render_files(
     env_path: Path,
     dietpi_template: Path,
@@ -197,6 +229,9 @@ def render_files(
     for path, content in outputs.items():
         path.write_text(content, encoding="utf-8", newline="\n")
         os.chmod(path, 0o600)
+
+    for name in stage_app_env_files(values, output_directory):
+        print(f"Staged per-rig secrets: {name}")
 
 
 def parse_args() -> argparse.Namespace:

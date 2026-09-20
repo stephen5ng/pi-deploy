@@ -224,6 +224,11 @@ if [[ -f "$WORK_DIRECTORY/rendered/lexacube-zai-key" ]]; then
     cp "$WORK_DIRECTORY/rendered/lexacube-zai-key" "$BOOT_MOUNT/lexacube-zai-key"
     echo "  Z.ai key staged; bootstrap.sh installs it and removes it from /boot."
 fi
+for STAGED_ENV in "$WORK_DIRECTORY"/rendered/*.env; do
+    [[ -e "$STAGED_ENV" ]] || break
+    cp "$STAGED_ENV" "$BOOT_MOUNT/$(basename "$STAGED_ENV")"
+    echo "  $(basename "$STAGED_ENV") staged; bootstrap.sh installs it to /etc and removes it from /boot."
+done
 if [[ -f "$WORK_DIRECTORY/rendered/lexacube-firmware-secrets.h" ]]; then
     cp "$WORK_DIRECTORY/rendered/lexacube-firmware-secrets.h" \
         "$BOOT_MOUNT/lexacube-firmware-secrets.h"

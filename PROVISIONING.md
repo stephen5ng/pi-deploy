@@ -170,21 +170,29 @@ SSH public key. Add `ZAI_API_KEY` if it should be installed automatically:
 ${EDITOR:-vi} provisioning.env
 ```
 
-If the old Pi had `/etc/lexacube.env`, copy its extracted contents to a local
-staging file. Do the same for Knockstrip when it is installed:
+Per-rig application secrets live in a directory outside the repository,
+`~/.lexacube-secrets` by default (`SECRETS_DIR` in `provisioning.env`). Every
+`<app>.env` file found there is staged on the boot partition, and `bootstrap.sh`
+installs it to `/etc/<app>.env` (0600) and deletes the boot copy. Keep them
+there rather than in `/tmp`, which does not survive to the next flash:
 
 ```sh
+mkdir -m 700 -p "$HOME/.lexacube-secrets"
 test ! -f "$HOME/lexacube-old-pi-backup/machine-state/etc/lexacube.env" || \
   cp "$HOME/lexacube-old-pi-backup/machine-state/etc/lexacube.env" \
-    /tmp/lexacube.env
+    "$HOME/.lexacube-secrets/lexacube.env"
 test ! -f "$HOME/lexacube-old-pi-backup/machine-state/etc/knockstrip.env" || \
   cp "$HOME/lexacube-old-pi-backup/machine-state/etc/knockstrip.env" \
-    /tmp/knockstrip.env
-chmod 600 /tmp/lexacube.env /tmp/knockstrip.env 2>/dev/null || true
+    "$HOME/.lexacube-secrets/knockstrip.env"
+chmod 600 "$HOME"/.lexacube-secrets/*.env 2>/dev/null || true
 ```
 
 Only copy files that existed on the old Pi. `lexacube.env` carries the PostHog
 upload settings; `knockstrip.env` carries Knockstrip service credentials.
+`prepare_dietpi_sd.sh` prints what it staged, and warns when the directory is
+missing or empty — a flash with no `lexacube.env` plays normally and records no
+analytics at all, and one with no `knockstrip.env` leaves knockstrip unable to
+start.
 
 The firmware secrets file normally does not need to be restored. Set
 `CUBE_WIFI_SSID` and `CUBE_WIFI_PASSWORD` in `provisioning.env` to stage a
