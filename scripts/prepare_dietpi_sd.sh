@@ -133,7 +133,8 @@ python3 "$SCRIPT_DIR/render_dietpi_provisioning.py" \
     --env "$CONFIG" \
     --dietpi-template "$REPOSITORY_DIR/dietpi.template.txt" \
     --wifi-template "$REPOSITORY_DIR/dietpi-wifi.template.txt" \
-    --output-directory "$WORK_DIRECTORY/rendered"
+    --output-directory "$WORK_DIRECTORY/rendered" \
+    --apps-config "$REPOSITORY_DIR/apps.yaml"
 cp "$SCRIPT_DIR/Automation_Custom_Script.sh" \
     "$WORK_DIRECTORY/rendered/Automation_Custom_Script.sh"
 

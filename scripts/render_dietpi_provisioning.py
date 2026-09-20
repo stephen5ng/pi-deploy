@@ -168,7 +168,27 @@ def secrets_directory(values: dict[str, str]) -> Path:
     return Path(values.get("SECRETS_DIR") or "~/.lexacube-secrets").expanduser()
 
 
-def stage_app_env_files(values: dict[str, str], output_directory: Path) -> list[str]:
+APP_NAME = re.compile(r"^\s*-\s+name:\s*(\S+)\s*$", re.MULTILINE)
+
+
+def configured_app_names(apps_config: Path) -> set[str]:
+    """The app names bootstrap will look for on the boot partition.
+
+    Anything else staged there is never installed and never deleted, because
+    `consume_staged_app_env` only runs for names in apps.yaml -- so a typo or a
+    retired app would leave credentials readable on a FAT partition forever.
+    """
+    return set(APP_NAME.findall(apps_config.read_text(encoding="utf-8")))
+
+
+DEFAULT_APPS_CONFIG = Path(__file__).resolve().parents[1] / "apps.yaml"
+
+
+def stage_app_env_files(
+    values: dict[str, str],
+    output_directory: Path,
+    apps_config: Path = DEFAULT_APPS_CONFIG,
+) -> list[str]:
     """Copy per-rig `<app>.env` secrets so they can be written to /boot.
 
     These files are gitignored in the app repos and cannot be defaulted, so a
@@ -184,8 +204,15 @@ def stage_app_env_files(values: dict[str, str], output_directory: Path) -> list[
         )
         return []
 
+    app_names = configured_app_names(apps_config)
     staged: list[str] = []
     for source in sorted(directory.glob("*.env")):
+        if source.stem not in app_names:
+            print(
+                f"Warning: not staging {source.name}; "
+                f"{apps_config.name} configures no app named '{source.stem}'."
+            )
+            continue
         destination = output_directory / source.name
         destination.write_bytes(source.read_bytes())
         os.chmod(destination, 0o600)
@@ -201,6 +228,7 @@ def render_files(
     dietpi_template: Path,
     wifi_template: Path,
     output_directory: Path,
+    apps_config: Path = DEFAULT_APPS_CONFIG,
 ) -> None:
     if stat.S_IMODE(env_path.stat().st_mode) & 0o077:
         raise ValueError(f"{env_path} must not be readable by group or other users")
@@ -230,7 +258,7 @@ def render_files(
         path.write_text(content, encoding="utf-8", newline="\n")
         os.chmod(path, 0o600)
 
-    for name in stage_app_env_files(values, output_directory):
+    for name in stage_app_env_files(values, output_directory, apps_config):
         print(f"Staged per-rig secrets: {name}")
 
 
@@ -240,13 +268,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dietpi-template", required=True, type=Path)
     parser.add_argument("--wifi-template", required=True, type=Path)
     parser.add_argument("--output-directory", required=True, type=Path)
+    parser.add_argument("--apps-config", type=Path, default=DEFAULT_APPS_CONFIG)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     render_files(
-        args.env, args.dietpi_template, args.wifi_template, args.output_directory
+        args.env,
+        args.dietpi_template,
+        args.wifi_template,
+        args.output_directory,
+        args.apps_config,
     )
     print(f"Rendered DietPi first-boot files in {args.output_directory}")
     return 0

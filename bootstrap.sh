@@ -63,6 +63,16 @@ while IFS= read -r staged_app_name; do
     consume_staged_app_env "$staged_app_name"
 done < <(yq -r '.apps[].name' "$CONFIG")
 
+# Anything left is a secret this bootstrap will never install and never
+# delete, sitting world-readable on a FAT partition. Report it rather than
+# removing it: the file may belong to an app that is about to be added, and
+# deleting the only copy of a credential is worse than naming it.
+for leftover_env in /boot/firmware/*.env /boot/*.env; do
+    [[ -f "$leftover_env" ]] || continue
+    echo "WARNING: $leftover_env matches no app in $CONFIG; it was not" >&2
+    echo "         installed and is still readable on the boot partition." >&2
+done
+
 app_is_selected() {
     local candidate=$1
     local selected_app

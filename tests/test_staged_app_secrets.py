@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPOSITORY / "scripts"))
 import render_dietpi_provisioning as render  # noqa: E402
 
 SD_SCRIPT = REPOSITORY / "scripts" / "prepare_dietpi_sd.sh"
+APPS_CONFIG = REPOSITORY / "apps.yaml"
 
 
 class StageAppEnvFilesTests(unittest.TestCase):
@@ -35,7 +36,7 @@ class StageAppEnvFilesTests(unittest.TestCase):
             output.mkdir()
 
             staged = render.stage_app_env_files(
-                {"SECRETS_DIR": str(secrets)}, output
+                {"SECRETS_DIR": str(secrets)}, output, APPS_CONFIG
             )
 
             self.assertEqual(staged, ["knockstrip.env", "lexacube.env"])
@@ -51,7 +52,7 @@ class StageAppEnvFilesTests(unittest.TestCase):
             output.mkdir()
 
             staged = render.stage_app_env_files(
-                {"SECRETS_DIR": str(root / "absent")}, output
+                {"SECRETS_DIR": str(root / "absent")}, output, APPS_CONFIG
             )
 
             self.assertEqual(staged, [])
@@ -62,6 +63,41 @@ class StageAppEnvFilesTests(unittest.TestCase):
             render.secrets_directory({}),
             Path("~/.lexacube-secrets").expanduser(),
         )
+
+
+class ConfiguredAppFilterTests(unittest.TestCase):
+    """A secret for an app bootstrap does not know about is never installed
+    and never deleted, so staging it leaves credentials readable on FAT."""
+
+    def test_a_file_naming_no_configured_app_is_not_staged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secrets = root / "secrets"
+            secrets.mkdir()
+            (secrets / "lexacube.env").write_text("ANALYTICS_PRODUCT=lexacube\n")
+            (secrets / "old-app.env").write_text("SECRET=stale\n")
+            output = root / "rendered"
+            output.mkdir()
+
+            staged = render.stage_app_env_files(
+                {"SECRETS_DIR": str(secrets)}, output, APPS_CONFIG
+            )
+
+            self.assertEqual(staged, ["lexacube.env"])
+            self.assertFalse((output / "old-app.env").exists())
+
+    def test_the_configured_names_come_from_apps_yaml(self):
+        names = render.configured_app_names(APPS_CONFIG)
+
+        self.assertEqual(names, {"lexacube", "nfc-control", "knockstrip"})
+
+
+class LeftoverBootSecretTests(unittest.TestCase):
+    def test_bootstrap_warns_about_an_env_file_it_will_never_consume(self):
+        source = (REPOSITORY / "bootstrap.sh").read_text(encoding="utf-8")
+
+        self.assertIn("for leftover_env in /boot/firmware/*.env /boot/*.env", source)
+        self.assertIn("matches no app in $CONFIG", source)
 
 
 class BootPartitionCopyTests(unittest.TestCase):
