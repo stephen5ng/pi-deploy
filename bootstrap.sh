@@ -230,6 +230,22 @@ install_staged_deploy_keys() {
     done
 }
 
+# Drops an existing stanza for this alias, whatever wrote it: a stanza from an
+# older bootstrap has no host-key options, and appending a second `Host` block
+# with the same name would leave ssh reading the first one. Everything from the
+# matching `Host` line until the next one at column 0 belongs to that stanza.
+remove_ssh_alias() {
+    local alias_host=$1 config="/root/.ssh/config"
+
+    [[ -f "$config" ]] || return 0
+    awk -v alias="$alias_host" '
+        /^Host[ \t]/ { skip = ($2 == alias) }
+        !skip
+    ' "$config" > "$config.pi-deploy-tmp" || return 1
+    mv "$config.pi-deploy-tmp" "$config"
+    chmod 600 "$config"
+}
+
 # Configures every installed key, not only the ones staged this run: a rerun
 # must repair the SSH config and git rules after the boot copies are gone.
 configure_github_deploy_keys() {
@@ -247,16 +263,20 @@ configure_github_deploy_keys() {
         repo=${owner_repo#*.}
         alias_host="github-$owner-$repo"
 
-        if ! grep -q "^Host $alias_host\$" /root/.ssh/config 2>/dev/null; then
-            # The host-key options belong in the alias, not only in
-            # git_clone_or_update's GIT_SSH_COMMAND. `github_ssh_auth_works`
-            # tests `git@github.com`, which a per-repo deploy key cannot
-            # authenticate, so use_ssh stays false, the clone keeps its HTTPS
-            # spelling and reaches SSH through `insteadOf` instead -- with no
-            # GIT_SSH_COMMAND, and so no $GITHUB_KNOWN_HOSTS. On a fresh Pi,
-            # whose /root/.ssh/known_hosts has never seen github.com, the
-            # first private clone then fails host key verification.
-            cat >> /root/.ssh/config <<EOF
+        # Rewritten on every run rather than written once when absent. A Pi
+        # bootstrapped by an earlier version carries a stanza with no host-key
+        # options -- exactly the box whose first private clone failed -- and
+        # skipping an existing stanza would preserve that failure forever.
+        #
+        # The host-key options belong in the alias, not only in
+        # git_clone_or_update's GIT_SSH_COMMAND. `github_ssh_auth_works` tests
+        # `git@github.com`, which a per-repo deploy key cannot authenticate,
+        # so use_ssh stays false, the clone keeps its HTTPS spelling and
+        # reaches SSH through `insteadOf` instead -- with no GIT_SSH_COMMAND,
+        # and so no $GITHUB_KNOWN_HOSTS. On a Pi whose /root/.ssh/known_hosts
+        # has never seen github.com, that clone fails host key verification.
+        remove_ssh_alias "$alias_host"
+        cat >> /root/.ssh/config <<EOF
 Host $alias_host
     HostName github.com
     User git
@@ -266,8 +286,7 @@ Host $alias_host
     StrictHostKeyChecking yes
 
 EOF
-            echo "Configured SSH alias $alias_host for $owner/$repo"
-        fi
+        echo "Configured SSH alias $alias_host for $owner/$repo"
         chmod 600 /root/.ssh/config
 
         git config --global --replace-all \

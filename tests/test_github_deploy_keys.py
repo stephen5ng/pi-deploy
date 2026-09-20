@@ -159,6 +159,48 @@ class ConfigureDeployKeysTests(unittest.TestCase):
             (self.root / "root/.ssh/config").read_text(),
         )
 
+    def test_an_alias_from_an_older_bootstrap_is_repaired(self):
+        """The box this bug stranded is the one that already has a stanza.
+
+        An earlier bootstrap wrote the alias without host-key options and its
+        first private clone failed; if a rerun skipped the existing stanza the
+        failure would survive every future run.
+        """
+        keys = self.root / "root/.ssh/github-deploy-keys"
+        keys.mkdir(parents=True)
+        (keys / "stephen5ng.cubes").write_text("KEY\n")
+        config = self.root / "root/.ssh/config"
+        config.write_text(
+            "Host other-host\n"
+            "    HostName example.invalid\n"
+            "\n"
+            "Host github-stephen5ng-cubes\n"
+            "    HostName github.com\n"
+            "    User git\n"
+            f"    IdentityFile {keys}/stephen5ng.cubes\n"
+            "    IdentitiesOnly yes\n"
+            "\n"
+        )
+
+        result = run_configure(self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        effective = subprocess.run(
+            ["ssh", "-G", "-F", str(config), "github-stephen5ng-cubes"],
+            capture_output=True,
+            text=True,
+        ).stdout.lower()
+        self.assertIn("stricthostkeychecking true", effective)
+        self.assertIn(
+            f"userknownhostsfile {self.root}/root/.ssh/github_known_hosts".lower(),
+            effective,
+        )
+        text = config.read_text()
+        self.assertEqual(text.count("Host github-stephen5ng-cubes"), 1)
+        # An unrelated stanza must survive the rewrite.
+        self.assertIn("Host other-host", text)
+        self.assertIn("HostName example.invalid", text)
+
     def test_rerun_does_not_duplicate_the_alias_block(self):
         self.stage("stephen5ng.cubes")
         self.assertEqual(run_configure(self.root).returncode, 0)
