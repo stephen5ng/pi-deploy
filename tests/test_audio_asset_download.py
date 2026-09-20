@@ -167,3 +167,129 @@ class ApiTokenInstallTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstallWordSoundsTests(unittest.TestCase):
+    """The download and unpack must degrade the same way the query does.
+
+    Each of these failures previously ran under `set -e` and ended the whole
+    bootstrap before any systemd unit was installed.
+    """
+
+    def run_install(self, root, curl_script: str, parts: str = "aa") -> subprocess.CompletedProcess:
+        start = BOOTSTRAP_SOURCE.index("install_word_sounds() {")
+        end = BOOTSTRAP_SOURCE.index("# GitHub SSH host keys")
+        body = BOOTSTRAP_SOURCE[start:end]
+
+        binaries = root / "bin"
+        binaries.mkdir(exist_ok=True)
+        (binaries / "curl").write_text(curl_script)
+        (binaries / "curl").chmod(0o755)
+
+        assets = root / "assets"
+        assets.mkdir(exist_ok=True)
+        downloads = root / "downloads"
+        downloads.mkdir(exist_ok=True)
+
+        urls = "\n".join(
+            f"word_sounds.tar.gz.part.{part}\thttps://api/{part}" for part in parts.split()
+        )
+        script = (
+            "set -euo pipefail\n"
+            f'export PATH="{binaries}:$PATH"\n'
+            "GITHUB_API_AUTH=()\n"
+            + body
+            + f'\nif install_word_sounds "{urls}" "{downloads}" "{assets}"; then\n'
+            "    echo INSTALLED\nelse\n    echo DEGRADED\nfi\n"
+            "echo reached-the-next-step\n"
+        )
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    def make_corpus_curl(self, root) -> str:
+        """A curl stand-in that writes a real one-word corpus tarball."""
+        import tarfile
+
+        corpus = root / "corpus"
+        (corpus / "word_sounds_0").mkdir(parents=True, exist_ok=True)
+        (corpus / "word_sounds_0" / "aah.wav").write_bytes(b"RIFF")
+        (corpus / "word_sounds_1").mkdir(exist_ok=True)
+        (corpus / "word_sounds_1" / "aah.wav").write_bytes(b"RIFF")
+        archive = root / "word_sounds.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for name in ("word_sounds_0", "word_sounds_1"):
+                tar.add(corpus / name, arcname=name)
+        return (
+            "#!/bin/sh\n"
+            "while [ $# -gt 0 ]; do\n"
+            '  if [ "$1" = "-o" ]; then out=$2; fi\n'
+            "  shift\n"
+            "done\n"
+            f'cp "{archive}" "$out"\n'
+        )
+
+    def test_a_complete_download_publishes_all_three_voices(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = self.run_install(root, self.make_corpus_curl(root))
+
+            self.assertIn("INSTALLED", result.stdout, result.stderr)
+            for voice in ("word_sounds_0", "word_sounds_1", "word_sounds_2"):
+                self.assertTrue((root / "assets" / voice).is_dir(), voice)
+            self.assertFalse((root / "assets" / ".word_sounds_staging").exists())
+
+    def test_a_failing_download_degrades_and_publishes_nothing(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            result = self.run_install(root, "#!/bin/sh\nexit 22\n")
+
+            self.assertIn("DEGRADED", result.stdout, result.stderr)
+            self.assertIn("reached-the-next-step", result.stdout)
+            self.assertEqual(list((root / "assets").glob("word_sounds_*")), [])
+
+    def test_a_truncated_archive_degrades_without_a_half_corpus(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # A part that downloads fine but is not a valid gzip stream: the
+            # failure mode that would otherwise leave word_sounds_0 present
+            # and make every later run skip the download.
+            curl = (
+                "#!/bin/sh\n"
+                "while [ $# -gt 0 ]; do\n"
+                '  if [ "$1" = "-o" ]; then out=$2; fi\n'
+                "  shift\n"
+                "done\n"
+                'printf "not a gzip stream" > "$out"\n'
+            )
+
+            result = self.run_install(root, curl)
+
+            self.assertIn("DEGRADED", result.stdout, result.stderr)
+            self.assertEqual(list((root / "assets").glob("word_sounds_*")), [])
+
+    def test_one_bad_part_among_several_degrades(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            curl = (
+                "#!/bin/sh\n"
+                "while [ $# -gt 0 ]; do\n"
+                '  if [ "$1" = "-o" ]; then out=$2; fi\n'
+                '  if [ "$1" = "https://api/ab" ]; then fail=1; fi\n'
+                "  shift\n"
+                "done\n"
+                '[ -n "${fail:-}" ] && exit 18\n'
+                'printf "x" > "$out"\n'
+            )
+
+            result = self.run_install(root, curl, parts="aa ab")
+
+            self.assertIn("DEGRADED", result.stdout, result.stderr)
+            self.assertEqual(list((root / "assets").glob("word_sounds_*")), [])

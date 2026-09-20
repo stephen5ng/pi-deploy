@@ -127,6 +127,42 @@ configure_github_api_token() {
     fi
 }
 
+# Returns non-zero rather than aborting: every caller treats missing word
+# sounds as a degradation. Each step needs its own `|| return 1`, because a
+# function called from an `if` condition runs with `set -e` suspended.
+#
+# The corpus is unpacked beside its destination and moved in only once tar has
+# succeeded. A half-extracted one would otherwise satisfy the `word_sounds_0`
+# test its caller uses, so every later bootstrap would skip the download and
+# the rig would keep a silently incomplete set of words.
+install_word_sounds() {
+    local asset_urls=$1 download_dir=$2 assets_dir=$3
+    local filename url staging="$3/.word_sounds_staging"
+
+    while IFS=$'\t' read -r filename url; do
+        echo "  Downloading $filename..."
+        curl -Lf "${GITHUB_API_AUTH[@]}" \
+            --header "Accept: application/octet-stream" \
+            "$url" -o "$download_dir/$filename" || return 1
+    done <<< "$asset_urls"
+
+    echo "  Extracting audio assets..."
+    cat "$download_dir"/word_sounds.tar.gz.part.* \
+        > "$download_dir/word_sounds.tar.gz" || return 1
+
+    rm -rf "$staging"
+    mkdir -p "$staging" || return 1
+    tar xzf "$download_dir/word_sounds.tar.gz" -C "$staging" || return 1
+    [[ -d "$staging/word_sounds_0" ]] || return 1
+
+    # word_sounds_0 is the neutral voice; copy it for player 2
+    cp -r "$staging/word_sounds_0" "$staging/word_sounds_2" || return 1
+
+    mkdir -p "$assets_dir" || return 1
+    mv "$staging"/word_sounds_* "$assets_dir/" || return 1
+    rmdir "$staging" 2>/dev/null || true
+}
+
 # GitHub SSH host keys (pinned for security, not ssh-keyscan)
 # See: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
 GITHUB_RSA_HOST_KEY="github.com ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEAq2A7hRGmdnm9tUDbO9IDSwBK6TbQa+PXYPCPy7rb/tT5ubbMy3phfIWKUQQF0su7lKTV0qVRtoylf6PqPxLzLjl2vu+Yc/wwHEmNs68tpJchOaNFk8bdK6UmvFAiZrmVS/cpuMlZ8+Y0baQpMpLfZ0DJAGHdB2V38tnOKDFjLUKBdP/FoKRs8K8NKkI6PZwcPJAwpvydRprLHm1Xo7vhDhRSA/nNSItv+wICMn+GhA6s+QYwt/fAv+QH3/X1w=="
@@ -669,25 +705,20 @@ PYTHON
                     echo "           No GitHub API token is installed; see PROVISIONING.md." >&2
                 fi
             else
-                while IFS=$'\t' read -r filename url; do
-                    echo "  Downloading $filename..."
-                    curl -Lf "${GITHUB_API_AUTH[@]}" \
-                        --header "Accept: application/octet-stream" \
-                        "$url" -o "$AUDIO_DOWNLOAD_DIR/$filename"
-                done <<< "$ASSET_URLS"
-
-                echo "  Extracting audio assets..."
-                cat "$AUDIO_DOWNLOAD_DIR"/word_sounds.tar.gz.part.* > "$AUDIO_DOWNLOAD_DIR/word_sounds.tar.gz"
-                mkdir -p "$ASSETS_DIR"
-                tar xzf "$AUDIO_DOWNLOAD_DIR/word_sounds.tar.gz" -C "$ASSETS_DIR"
-
-                # word_sounds_0 is the neutral voice; copy it for player 2
-                if [[ -d "$ASSETS_DIR/word_sounds_0" ]]; then
-                    cp -r "$ASSETS_DIR/word_sounds_0" "$ASSETS_DIR/word_sounds_2"
+                # Fetching and unpacking 3.3GB fails in more ways than the
+                # release query does: a dropped connection, a token that
+                # expired mid-run, a part deleted between the query and the
+                # fetch, a truncated concatenation. Each of those ran under
+                # `set -e` and took the bootstrap with it -- the same "missing
+                # words cost the whole Pi" failure the query above already
+                # learned not to cause.
+                if install_word_sounds "$ASSET_URLS" "$AUDIO_DOWNLOAD_DIR" "$ASSETS_DIR"; then
+                    echo "  Audio assets installed."
+                else
+                    echo "  WARNING: word sound assets could not be installed." >&2
+                    echo "           The game will run and speak no words." >&2
                 fi
-
-                rm -rf "$AUDIO_DOWNLOAD_DIR"
-                echo "  Audio assets installed."
+                rm -rf "$AUDIO_DOWNLOAD_DIR" "$ASSETS_DIR/.word_sounds_staging"
             fi
         else
             echo "Audio assets already present, skipping download."
