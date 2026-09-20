@@ -89,6 +89,34 @@ app_is_selected() {
 # keep using HTTPS which works fine for public repositories.
 # =============================================================================
 
+# A GitHub API credential, separate from the SSH keys used for cloning: an SSH
+# key authenticates git and cannot reach api.github.com at all, and the word
+# sound assets for a private repository live behind that API. Staged as
+# /boot/github-api-token and installed to /etc/github-api-token (0600), since
+# the FAT boot partition cannot hold permissions.
+GITHUB_API_TOKEN_FILE="/etc/github-api-token"
+GITHUB_API_AUTH=()
+
+configure_github_api_token() {
+    local boot_dir boot_token token
+
+    for boot_dir in /boot/firmware /boot; do
+        boot_token="$boot_dir/github-api-token"
+        [[ -f "$boot_token" ]] || continue
+        if [[ ! -f "$GITHUB_API_TOKEN_FILE" ]]; then
+            install -m 600 "$boot_token" "$GITHUB_API_TOKEN_FILE"
+            echo "Installed staged GitHub API token"
+        fi
+        rm -f "$boot_token"
+        break
+    done
+
+    if [[ -s "$GITHUB_API_TOKEN_FILE" ]]; then
+        token=$(tr -d '\r\n' < "$GITHUB_API_TOKEN_FILE")
+        GITHUB_API_AUTH=(--header "Authorization: Bearer $token")
+    fi
+}
+
 # GitHub SSH host keys (pinned for security, not ssh-keyscan)
 # See: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
 GITHUB_RSA_HOST_KEY="github.com ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEAq2A7hRGmdnm9tUDbO9IDSwBK6TbQa+PXYPCPy7rb/tT5ubbMy3phfIWKUQQF0su7lKTV0qVRtoylf6PqPxLzLjl2vu+Yc/wwHEmNs68tpJchOaNFk8bdK6UmvFAiZrmVS/cpuMlZ8+Y0baQpMpLfZ0DJAGHdB2V38tnOKDFjLUKBdP/FoKRs8K8NKkI6PZwcPJAwpvydRprLHm1Xo7vhDhRSA/nNSItv+wICMn+GhA6s+QYwt/fAv+QH3/X1w=="
@@ -285,6 +313,7 @@ for selected_app in "${SELECTED_APPS[@]}"; do
     done <<< "$required_apps"
 done
 
+configure_github_api_token
 setup_ssh_for_root
 
 if [[ ${#SELECTED_APPS[@]} -gt 0 ]]; then
@@ -571,23 +600,58 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
             echo "  WARNING: pygame.libs directory not found in venv"
         fi
 
-        # Download word sounds audio assets from GitHub release (no auth required, public repo)
+        # Word sound assets come from a GitHub release on a PRIVATE repository,
+        # so both the release query and each asset download need a credential.
+        # Without one the game still runs and simply speaks no words -- worth
+        # continuing through, because the steps after this one install the
+        # systemd units, and failing here leaves a Pi with no services at all.
         ASSETS_DIR="$path/assets"
         if [[ ! -d "$ASSETS_DIR/word_sounds_0" ]]; then
             echo "Downloading word sounds audio assets..."
             RELEASE_API="https://api.github.com/repos/stephen5ng/cubes/releases/tags/audio-assets"
             AUDIO_DOWNLOAD_DIR=$(mktemp -d -p /var/tmp)
 
-            ASSET_URLS=$(curl -sf "$RELEASE_API" \
-                | python3 -c "import sys,json; assets=json.load(sys.stdin)['assets']; print('\n'.join(sorted(a['browser_download_url'] for a in assets if 'word_sounds.tar.gz.part' in a['name'])))")
+            # Every failure here arrives as empty input or a JSON error
+            # document rather than a non-zero curl exit: `curl -sf` on a 404
+            # prints nothing, and json.load() then raised under `set -e` and
+            # killed the bootstrap with a traceback instead of reaching the
+            # warning branch below. Measured on a fresh rig, which ended with
+            # no unit installed. Parse defensively.
+            #
+            # `url` rather than `browser_download_url`: the browser URL is
+            # unauthenticated and 404s for a private release, while the API
+            # asset endpoint serves the bytes with the same credential used
+            # here, given Accept: application/octet-stream.
+            ASSET_URLS=$(curl -sf "${GITHUB_API_AUTH[@]}" "$RELEASE_API" \
+                | python3 -c "$(cat <<'PYTHON'
+import json
+import sys
+
+try:
+    assets = json.load(sys.stdin)["assets"]
+except Exception:
+    sys.exit(0)
+# name and URL together: the API asset URL ends in a numeric id, and the
+# parts are reassembled by filename glob further down.
+print("\n".join(sorted(
+    f"{asset['name']}\t{asset['url']}" for asset in assets
+    if "word_sounds.tar.gz.part" in asset["name"]
+)))
+PYTHON
+)") || true
 
             if [[ -z "$ASSET_URLS" ]]; then
-                echo "  WARNING: No audio asset parts found in release, skipping."
+                echo "  WARNING: no word sound assets found at $RELEASE_API." >&2
+                echo "           The game will run and speak no words." >&2
+                if [[ ${#GITHUB_API_AUTH[@]} -eq 0 ]]; then
+                    echo "           No GitHub API token is installed; see PROVISIONING.md." >&2
+                fi
             else
-                while IFS= read -r url; do
-                    filename=$(basename "$url")
+                while IFS=$'\t' read -r filename url; do
                     echo "  Downloading $filename..."
-                    curl -Lf "$url" -o "$AUDIO_DOWNLOAD_DIR/$filename"
+                    curl -Lf "${GITHUB_API_AUTH[@]}" \
+                        --header "Accept: application/octet-stream" \
+                        "$url" -o "$AUDIO_DOWNLOAD_DIR/$filename"
                 done <<< "$ASSET_URLS"
 
                 echo "  Extracting audio assets..."
