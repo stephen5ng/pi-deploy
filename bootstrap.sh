@@ -10,6 +10,12 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
     exit 1
 fi
 
+# Bootstrap runs as root, so --global would write /root/.gitconfig and the
+# dietpi user would still hit "dubious ownership". --system covers every user.
+if ! git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$SCRIPT_DIR"; then
+    git config --system --add safe.directory "$SCRIPT_DIR"
+fi
+
 if ! command -v yq &> /dev/null; then
     echo "Installing bootstrap prerequisites..."
     apt-get update
