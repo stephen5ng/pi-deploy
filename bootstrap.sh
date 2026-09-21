@@ -1526,6 +1526,18 @@ else
     echo "  Warning: scripts/reliability.sh not found, skipping hardening"
 fi
 
+# DHCP server preference. Ordered with the other host-level steps and, like
+# them, ahead of the WiFi step that can drop the SSH session. Writes config
+# only -- it deliberately does not re-lease, so this run cannot pull the
+# address out from under itself.
+if [[ -f "$SCRIPT_DIR/scripts/dhcp-preference.sh" ]]; then
+    mapfile -t reject_servers < <(yq -r '.dhcp.reject_servers[]? // empty' "$CONFIG")
+    echo "Configuring DHCP server preference..."
+    bash "$SCRIPT_DIR/scripts/dhcp-preference.sh" "${reject_servers[@]}"
+else
+    echo "  Warning: scripts/dhcp-preference.sh not found, skipping"
+fi
+
 # mDNS hostname publishing. Ordered BEFORE the WiFi preference below for the
 # same reason that one is last: a re-association can drop the SSH session, and
 # a drop there must not skip this.
