@@ -1504,6 +1504,16 @@ else
     echo "  Warning: scripts/reliability.sh not found, skipping hardening"
 fi
 
+# mDNS hostname publishing. Ordered BEFORE the WiFi preference below for the
+# same reason that one is last: a re-association can drop the SSH session, and
+# a drop there must not skip this.
+if [[ -f "$SCRIPT_DIR/scripts/mdns.sh" ]]; then
+    echo "Configuring mDNS hostname publishing..."
+    bash "$SCRIPT_DIR/scripts/mdns.sh"
+else
+    echo "  Warning: scripts/mdns.sh not found, skipping"
+fi
+
 # DietPi's generator writes no `priority=` into wpa_supplicant.conf, so with two
 # networks configured the band is chosen by signal strength -- which at range
 # means 2.4GHz, the band the single-band ESP32 cubes cannot leave and the Pi
