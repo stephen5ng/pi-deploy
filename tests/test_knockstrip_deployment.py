@@ -40,7 +40,15 @@ class KnockstripDeploymentTests(unittest.TestCase):
     def test_uv_environment_and_hardware_dependencies_are_selected(self):
         # Knockstrip commits uv.lock and puts Pi-only rpi-ws281x in an extra;
         # --all-extras is required for the actual LED hardware backend.
-        self.assertIn('(cd "$path" && uv sync --all-extras)', BOOTSTRAP)
+        #
+        # Matched per-flag rather than as one literal command: this used to pin
+        # the whole string, so adding --inexact to stop sync uninstalling the
+        # rest of an app's environment failed a test that has no opinion about
+        # that flag. The requirement is that every sync selects the extras.
+        syncs = re.findall(r"uv sync ([^)\n]*)", BOOTSTRAP)
+        self.assertTrue(syncs, "no `uv sync` found in bootstrap.sh")
+        for flags in syncs:
+            self.assertIn("--all-extras", flags)
         self.assertRegex(self.app, r"(?m)^\s*- libportaudio2$")
 
     def test_rig_mapping_is_deployed_without_a_local_git_commit(self):
