@@ -3,6 +3,15 @@
 # chosen by signal strength -- which at range means 2.4GHz, the band the
 # single-band cubes cannot leave and the Pi should stay off. Leave blank to
 # express no preference.
+# This LAN runs two DHCP servers on one bridged segment -- the house router
+# (192.168.0.1) and the rig's own (192.168.8.1) -- and dhclient takes whichever
+# OFFER lands first. The Pi must end up on the rig's subnet: the cubes live at
+# 192.168.8.{20+N}/{40+N} and the broker's service address is 192.168.8.247.
+# Listing the house server here makes dhclient discard its offers.
+dhcp:
+  reject_servers:
+    - 192.168.0.1
+
 wifi:
   preferred_ssid: FunAcross-5G
 
