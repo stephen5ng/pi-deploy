@@ -16,6 +16,28 @@ if ! git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$SCRI
     git config --system --add safe.directory "$SCRIPT_DIR"
 fi
 
+# A service that cannot start is usually environmental on this rig -- a
+# carrier-less eth0 leaves lexacube-address.service unable to claim the service
+# address, and a missing USB sound card or display makes the game exit -- and
+# none of that is a reason to skip the host-level hardening 200 lines below
+# (watchdog, persistent journal, zram, link-down routing, mDNS). Under
+# `set -euo pipefail` a bare `systemctl restart` aborted the run right there,
+# leaving the machine half-provisioned with nothing saying which half.
+#
+# So record and carry on, then fail at the very end: the run really did not
+# fully succeed, and the exit status should still say so -- just not at the
+# cost of everything after it. `|| true` would lose that entirely.
+failed_services=()
+
+start_unit() {
+    local unit=$1
+    if systemctl restart "$unit"; then
+        return 0
+    fi
+    echo "  WARNING: $unit did not start; continuing (journalctl -u $unit)" >&2
+    failed_services+=("$unit")
+}
+
 if ! command -v yq &> /dev/null; then
     echo "Installing bootstrap prerequisites..."
     apt-get update
@@ -1227,7 +1249,7 @@ EOF
         echo "Service $name installed; activation deferred to group '$exclusive_group'."
     else
         systemctl enable "${name}.service"
-        systemctl restart "${name}.service"
+        start_unit "${name}.service"
         echo "Service $name started."
     fi
 
@@ -1235,7 +1257,7 @@ EOF
     # (a deferred group member still gets its admin page).
     for extra_unit_name in $extra_units_to_enable; do
         systemctl enable "$extra_unit_name"
-        systemctl restart "$extra_unit_name"
+        start_unit "$extra_unit_name"
         echo "Sibling unit $extra_unit_name started."
     done
     echo ""
@@ -1289,7 +1311,7 @@ for group in $groups; do
         fi
     done
     systemctl enable "${active}.service"
-    systemctl restart "${active}.service"
+    start_unit "${active}.service"
     echo "Group '$group': $active running, others stopped and disabled."
     echo ""
 done
@@ -1319,7 +1341,7 @@ listener 1883 0.0.0.0
 allow_anonymous true
 persistence false
 MQTT_EOF
-    systemctl restart mosquitto
+    start_unit mosquitto
 fi
 
 echo "Configuring ALSA..."
@@ -1533,4 +1555,9 @@ else
 fi
 
 echo ""
+if (( ${#failed_services[@]} )); then
+    echo "=== Bootstrap complete, with ${#failed_services[@]} service(s) not running ==="
+    printf '  %s\n' "${failed_services[@]}"
+    exit 1
+fi
 echo "=== Bootstrap complete ==="
