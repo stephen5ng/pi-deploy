@@ -223,6 +223,24 @@ def stage_app_env_files(
     return staged
 
 
+def stage_github_api_token(values: dict[str, str], output_directory: Path) -> bool:
+    """Copy the GitHub API credential so it reaches /boot.
+
+    An SSH deploy key authenticates git and cannot reach api.github.com, where
+    the word sound release lives. Without this the Pi bootstraps fine and the
+    game speaks no words -- a degradation with no error, so stage it here
+    rather than leaving it to be noticed on the rig.
+    """
+    source = secrets_directory(values) / "github-api-token"
+    if not source.is_file():
+        return False
+
+    destination = output_directory / "github-api-token"
+    destination.write_bytes(source.read_bytes())
+    os.chmod(destination, 0o600)
+    return True
+
+
 def stage_github_deploy_keys(values: dict[str, str], output_directory: Path) -> list[str]:
     """Copy per-repository GitHub deploy keys so they reach /boot.
 
@@ -288,6 +306,14 @@ def render_files(
         print(f"Staged per-rig secrets: {name}")
     for name in stage_github_deploy_keys(values, output_directory):
         print(f"Staged GitHub deploy key: {name}")
+    if stage_github_api_token(values, output_directory):
+        print("Staged GitHub API token")
+    else:
+        print(
+            "Warning: no github-api-token in "
+            f"{secrets_directory(values)}; the rig will install with no word "
+            "sounds."
+        )
 
 
 def parse_args() -> argparse.Namespace:
