@@ -1470,14 +1470,12 @@ else
 fi
 
 # ============================================================================
-# RELIABILITY & OBSERVABILITY (watchdog, zram swap, persistent journal,
-# health logger). Idempotent; see scripts/reliability.sh.
-# ============================================================================
 # Wired-preferred networking. Ordered BEFORE the hardening below because the
 # route metrics it sets are only half the story: reliability.sh's
 # ignore_routes_with_linkdown is what makes the fallback automatic when a cable
 # dies, and applying the metrics first means a single bootstrap run leaves a
 # coherent configuration rather than one that needs a second pass.
+# ============================================================================
 if [[ -f "$SCRIPT_DIR/scripts/network-interfaces.sh" ]]; then
     echo "Configuring wired-preferred networking..."
     bash "$SCRIPT_DIR/scripts/network-interfaces.sh"
@@ -1485,23 +1483,37 @@ else
     echo "  Warning: scripts/network-interfaces.sh not found, skipping"
 fi
 
+# ============================================================================
+# RELIABILITY & OBSERVABILITY (watchdog, zram swap, persistent journal,
+# health logger). Idempotent; see scripts/reliability.sh.
+#
+# Ordered BEFORE wifi-preference.sh below: this masks DietPi's WiFi monitor,
+# which would otherwise be free to fire a competing ~24s reconnect while
+# wpa_cli reconfigure (next block) is reassociating the Pi.
+# ============================================================================
+if [[ -f "$SCRIPT_DIR/scripts/reliability.sh" ]]; then
+    echo "Applying reliability & observability hardening..."
+    bash "$SCRIPT_DIR/scripts/reliability.sh"
+else
+    echo "  Warning: scripts/reliability.sh not found, skipping hardening"
+fi
+
 # DietPi's generator writes no `priority=` into wpa_supplicant.conf, so with two
 # networks configured the band is chosen by signal strength -- which at range
 # means 2.4GHz, the band the single-band ESP32 cubes cannot leave and the Pi
 # should stay off.
+#
+# Ordered LAST of these three: this is the only one of the three that takes a
+# live action (wpa_cli reconfigure, when the config actually changed -- true
+# on every fresh install), which can re-associate the Pi to a different band
+# and drop an SSH session. Running it last means a drop here can't skip any of
+# the hardening above.
 if [[ -f "$SCRIPT_DIR/scripts/wifi-preference.sh" ]]; then
     preferred_ssid=$(yq -r '.wifi.preferred_ssid // empty' "$CONFIG")
     echo "Configuring WiFi preference..."
     bash "$SCRIPT_DIR/scripts/wifi-preference.sh" "$preferred_ssid"
 else
     echo "  Warning: scripts/wifi-preference.sh not found, skipping"
-fi
-
-if [[ -f "$SCRIPT_DIR/scripts/reliability.sh" ]]; then
-    echo "Applying reliability & observability hardening..."
-    bash "$SCRIPT_DIR/scripts/reliability.sh"
-else
-    echo "  Warning: scripts/reliability.sh not found, skipping hardening"
 fi
 
 echo ""
