@@ -135,7 +135,23 @@ chmod +x /usr/local/bin/pi-health-watch.sh
 cat > /etc/systemd/system/pi-health-watch.service <<'EOF'
 [Unit]
 Description=Pi health watch (throttle/undervoltage logger)
-After=multi-user.target
+# Deliberately NOT After=multi-user.target, though WantedBy= puts it in that
+# target. `WantedBy` is enough to pull the unit in; the extra ordering made it
+# wait for the WHOLE target's start job, and on this rig that job can stay
+# pending forever -- lexacube-address.service retries indefinitely by design
+# (no cable = no claim, and Upholds= starts the app whenever the claim finally
+# lands), which keeps multi-user.target's boot job "waiting" for good.
+#
+# Anything ordered after that target then blocks for good too, including this
+# unit's own `systemctl enable --now` in bootstrap -- measured on the rig: the
+# bootstrap hung here for minutes with no output, which is strictly worse than
+# failing. Probed both ways against a wedged queue: with the ordering
+# `systemctl start` timed out, without it returned 0.
+#
+# Nothing here needs the target anyway: the script polls vcgencmd and writes
+# to the journal, and DefaultDependencies already orders it after
+# sysinit.target, basic.target and systemd-journald.socket. Dropping the line
+# also starts the logger earlier, so a boot-time undervoltage is caught.
 
 [Service]
 ExecStart=/usr/local/bin/pi-health-watch.sh

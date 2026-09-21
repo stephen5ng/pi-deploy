@@ -76,5 +76,53 @@ class ReliabilityScriptTests(unittest.TestCase):
         )
 
 
+class UnitOrderingTests(unittest.TestCase):
+    """No unit written here may be ordered after multi-user.target.
+
+    `WantedBy=multi-user.target` already places a unit in the target; adding
+    `After=` makes it wait for the whole target's start job as well. On this rig
+    that job can stay pending indefinitely -- lexacube-address.service retries
+    its claim forever by design, so with no cable multi-user.target never
+    finishes starting -- and anything ordered after it then waits forever too.
+
+    That is how bootstrap.sh came to hang, silently, inside
+    `systemctl enable --now pi-health-watch.service`. Probed on the rig against
+    a wedged job queue: an otherwise identical unit WITH the ordering timed out
+    (exit 124), one WITHOUT it exited 0.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = RELIABILITY.read_text(encoding="utf-8")
+        # Every `cat > /etc/systemd/system/<name> <<'EOF' ... EOF` heredoc.
+        cls.units = dict(
+            re.findall(
+                r"cat > /etc/systemd/system/(\S+) <<'EOF'\n(.*?)^EOF$",
+                cls.source,
+                re.M | re.S,
+            )
+        )
+
+    def test_the_script_writes_at_least_one_unit(self):
+        # Guards the regex above: a silent zero-match would pass everything.
+        self.assertTrue(self.units, "no unit heredocs found -- has the form changed?")
+
+    def test_no_unit_waits_for_the_whole_multi_user_target(self):
+        offenders = [
+            name
+            for name, body in self.units.items()
+            if re.search(r"^After=.*\bmulti-user\.target\b", body, re.M)
+        ]
+        self.assertEqual(
+            offenders, [], "WantedBy= is enough; After= deadlocks on a stuck target"
+        )
+
+    def test_the_health_logger_still_starts_at_boot(self):
+        # Dropping the ordering must not drop the unit out of the target.
+        body = self.units.get("pi-health-watch.service")
+        self.assertIsNotNone(body, "pi-health-watch.service is no longer written")
+        self.assertRegex(body, r"(?m)^WantedBy=multi-user\.target$")
+
+
 if __name__ == "__main__":
     unittest.main()
