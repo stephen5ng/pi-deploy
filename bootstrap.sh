@@ -735,11 +735,35 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
         # interpreter, and the pygame.libs search below all spell out
         # `$venv_name`. Point uv at that directory instead of renaming four
         # call sites after it.
+        # --inexact: sync must never UNINSTALL. Without it `uv sync` makes the
+        # environment match the lock exactly, and a lock that is merely stale
+        # silently deletes the rest of the app. Measured on the rig when
+        # lexacube's lock still named three packages against seventeen in its
+        # requirements.txt:
+        #
+        #     Resolved 3 packages in 4ms
+        #     Uninstalled 27 packages in 114ms
+        #
+        # That took pygame-ce, aiomqtt and numpy off the machine, left the game
+        # unable to import, scrolled past in a log, and the run still reported
+        # success. A deploy may install what an app asks for; removing what it
+        # did not install is not its call. An app that genuinely wants a pruned
+        # environment can ask for one deliberately, which is a different change
+        # from every deploy doing it by default.
+        #
+        # It is a backstop, not a guarantee. --inexact stops the uninstall half;
+        # the install half can still write a lock's distribution over files
+        # another one owns. pygame and pygame-ce both claim the `pygame/` import
+        # package -- 723 and 636 files respectively, measured in the rig's own
+        # venv -- so the stale lock would have replaced pygame-ce's files by
+        # that route even with this flag. Removing the stale lock in the app
+        # repo is what closes that path; the two changes are jointly
+        # sufficient and neither alone is.
         if [[ -n "$venv_name" ]]; then
             (cd "$path" && UV_PROJECT_ENVIRONMENT="$path/$venv_name" \
-                uv sync --all-extras)
+                uv sync --all-extras --inexact)
         else
-            (cd "$path" && uv sync --all-extras)
+            (cd "$path" && uv sync --all-extras --inexact)
         fi
     elif [[ -n "$venv_name" && -f "$path/requirements.txt" ]]; then
         if [[ ! -f "$path/$venv_name/bin/activate" ]]; then
