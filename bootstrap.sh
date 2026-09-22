@@ -1383,16 +1383,59 @@ ALSA_EOF
 
 # Enable VC4 KMS (Kernel Mode Setting) for HDMI display output with DRM
 echo "Configuring VC4 KMS for pygame/SDL display output..."
-CONFIG_FILE="/boot/firmware/config.txt"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-    CONFIG_FILE="/boot/config.txt"
+# VC4_CONFIG_FILE is overridable so this block can be exercised against a
+# fixture; nothing sets it in production.
+VC4_CONFIG_FILE="${VC4_CONFIG_FILE:-/boot/firmware/config.txt}"
+if [[ ! -f "$VC4_CONFIG_FILE" ]]; then
+    VC4_CONFIG_FILE="/boot/config.txt"
 fi
-if ! grep -q "dtoverlay=vc4-kms-v3d" "$CONFIG_FILE"; then
-    echo "Adding VC4 KMS overlay to $CONFIG_FILE"
-    sed -i '/^#-------Display---------/a dtoverlay=vc4-kms-v3d' "$CONFIG_FILE"
-    echo "NOTE: Reboot required for VC4 KMS to take effect"
+# Anchored at the start of the line, because DietPi's own template ships the
+# overlay COMMENTED OUT:
+#
+#     #dtoverlay=vc4-kms-v3d,noaudio
+#
+# An unanchored grep matches that, so this reported "already configured" on a
+# machine where KMS was never enabled -- no /dev/dri, and SDL's kmsdrm backend
+# with nothing to open. Measured on the rig: the line above at config.txt:88,
+# `ls /dev/dri` absent, and bootstrap printing success on every run.
+if ! grep -qE '^[[:space:]]*dtoverlay=vc4-kms-v3d' "$VC4_CONFIG_FILE"; then
+    echo "Adding VC4 KMS overlay to $VC4_CONFIG_FILE"
+    # python3 rather than `sed -i`, matching scripts/wifi-preference.sh and
+    # scripts/dhcp-preference.sh: the in-place and append-after-address forms
+    # are GNU-only, which makes this branch impossible to exercise anywhere but
+    # the Pi.
+    python3 - "$VC4_CONFIG_FILE" <<'VC4_PY'
+import sys
+
+path = sys.argv[1]
+lines = open(path, encoding="utf-8").read().splitlines()
+marker = "#-------Display---------"
+overlay = "dtoverlay=vc4-kms-v3d"
+if marker in lines:
+    lines.insert(lines.index(marker) + 1, overlay)
+else:
+    # No DietPi section marker: append rather than silently do nothing. Safe
+    # here because config.txt carries no [filter] sections -- an appended
+    # overlay would otherwise apply only to the last one.
+    lines += ["", overlay]
+open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+VC4_PY
+    # Read the result back out of the file rather than trusting the writer.
+    #
+    # As written this cannot fire: the python3 above raises on a failed write
+    # and `set -e` aborts the run before we get here. It is kept as a guard
+    # against a future edit that makes the write conditional again -- which is
+    # exactly what the previous version was. That one used `sed -i` with an
+    # address that matched nothing on a config.txt lacking the DietPi marker,
+    # wrote nothing, exited 0, and let the branch above report success.
+    if grep -qE '^[[:space:]]*dtoverlay=vc4-kms-v3d' "$VC4_CONFIG_FILE"; then
+        echo "NOTE: Reboot required for VC4 KMS to take effect"
+    else
+        echo "  WARNING: could not add the VC4 KMS overlay to $VC4_CONFIG_FILE;" >&2
+        echo "           the display will have no /dev/dri for SDL to open" >&2
+    fi
 else
-    echo "VC4 KMS overlay already configured in $CONFIG_FILE"
+    echo "VC4 KMS overlay already configured in $VC4_CONFIG_FILE"
 fi
 
 # Configure CPU isolation for LED matrix performance
