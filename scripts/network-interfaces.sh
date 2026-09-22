@@ -2,7 +2,7 @@
 # ============================================================================
 # network-interfaces.sh — prefer wired, keep WiFi as a fallback.
 #
-# Idempotent; invoked from bootstrap.sh as root. Three things:
+# Idempotent; invoked from bootstrap.sh as root. Four things:
 #
 #   1. Bring eth0 up at boot at all. DietPi ships `#allow-hotplug eth0`
 #      commented out, so ifupdown never touches it and a plugged cable does
@@ -21,6 +21,26 @@
 #      same /24, and Linux answers ARP for any local address on any interface by
 #      default, so wlan0 would answer for a service address living on eth0 and
 #      the router would learn the wrong MAC.
+#
+#   4. Make the WiFi path self-healing at boot. ifupdown starts
+#      wpa_supplicant in pre-up, and we have measured it failing there --
+#      `daemon failed to start`, ifup aborting, wlan0 left down, the box
+#      unreachable until someone drove it from the console. Reproduced across
+#      two reboots.
+#
+#      It is timing, not the invocation. Run verbatim on the same machine once
+#      settled -- `-s -B -P /run/wpa_supplicant.wlan0.pid -i wlan0
+#      -D nl80211,wext -c ...` -- it exits 0, writes its pid file and
+#      associates. Same arguments, same config, same box; only the moment
+#      differs. (An earlier comparison here used FEWER arguments and so proved
+#      nothing; this one is the wrapper's own command line.)
+#
+#      What makes boot different is still unknown -- most likely the brcmfmac
+#      firmware not being ready that early, but unproven, because the
+#      boot-time failure logs nothing at all. Hence a oneshot unit that waits
+#      for the standard path, starts the daemon itself if it never came up,
+#      and says so in the journal: a no-op on every normal boot, and the first
+#      durable evidence on a bad one.
 #
 # Why wired matters here: every cube message crosses the air twice
 # (cube -> AP -> Pi). Wiring the Pi removes one of the two hops for every
@@ -44,11 +64,11 @@ echo "=== Network interfaces: wired preferred, WiFi fallback ==="
 # definition, so a drop-in would break networking rather than override it.
 # ---------------------------------------------------------------------------
 if grep -qF "$MARKER" "$INTERFACES"; then
-    echo "  [1/3] stanzas already managed"
+    echo "  [1/4] stanzas already managed"
 else
     backup="${INTERFACES}.before-pi-deploy.$(date +%Y%m%d-%H%M%S)"
     cp -a "$INTERFACES" "$backup"
-    echo "  [1/3] rewriting stanzas (backup: $backup)"
+    echo "  [1/4] rewriting stanzas (backup: $backup)"
 
     # Keep anything that is not one of the two stanzas we own, so a hand-added
     # drop-in source line or a third interface survives.
@@ -166,7 +186,7 @@ fi
 # does not -- see the exit hook below for what actually happens on a renewal
 # that changes the address.
 # ---------------------------------------------------------------------------
-echo "  [2/3] installing route-metric hook"
+echo "  [2/4] installing route-metric hook"
 cat > /usr/local/sbin/pi-deploy-route-metrics <<EOF
 #!/bin/sh
 # Managed by pi-deploy: give each interface's on-link subnet route the same
@@ -272,7 +292,7 @@ chmod 644 /etc/dhcp/dhclient-exit-hooks.d/50-pi-deploy-route-metrics
 # ---------------------------------------------------------------------------
 # 3. ARP, for two interfaces in one subnet.
 # ---------------------------------------------------------------------------
-echo "  [3/3] scoping ARP to the interface that owns each address"
+echo "  [3/4] scoping ARP to the interface that owns each address"
 cat > /etc/sysctl.d/61-pi-deploy-arp.conf <<'EOF'
 # Managed by pi-deploy (scripts/network-interfaces.sh).
 #
@@ -292,3 +312,76 @@ EOF
 sysctl -q --system
 
 echo "=== Network interfaces configured ==="
+
+# ---------------------------------------------------------------------------
+# 4/4. WiFi self-healing. See header item 4: ifupdown's pre-up starts
+# wpa_supplicant as a daemon, and on this rig that has failed at boot with the
+# interface left down and nothing in the logs -- while that same command line,
+# run verbatim once the machine has settled, exits 0 and associates. So the
+# invocation is sound and the moment is not; what differs about boot is not
+# yet established.
+#
+# This unit is the witness, not the fix: it waits for the standard path to
+# produce a wpa_supplicant on wlan0, and only if it never does, starts the
+# same daemon the wrapper would have, then leases. On every normal boot it is
+# a no-op that says so in the journal.
+# ---------------------------------------------------------------------------
+echo "  [4/4] installing WiFi boot rescue"
+cat > /usr/local/sbin/pi-deploy-wifi-rescue <<'EOF'
+#!/bin/sh
+# Managed by pi-deploy. One-shot: no-op if ifupdown got wpa_supplicant onto
+# wlan0 within the wait, otherwise start the daemon and lease. Tag:
+# pi-deploy-wifi-rescue.
+LOG="pi-deploy-wifi-rescue:"
+for i in $(seq 1 24); do
+    if pgrep -f "wpa_supplicant.*wlan0" >/dev/null 2>&1; then
+        echo "$LOG standard wpa_supplicant present; nothing to do"
+        exit 0
+    fi
+    sleep 5
+done
+echo "$LOG no wpa_supplicant after 120s; starting one"
+ip link set wlan0 up
+# Same invocation Debian's /etc/network/if-pre-up.d/wpasupplicant uses, so the
+# rescue reproduces the intended configuration rather than a variant of it.
+# Resolved via PATH with the package's location as fallback, matching
+# wifi-preference.sh's wpa_cli handling.
+WPA_SUPPLICANT=$(command -v wpa_supplicant || echo /usr/sbin/wpa_supplicant)
+# -s: log to syslog. Under -B nothing else reaches the journal, and the one
+# boot this daemon runs on is the boot whose evidence is worth having.
+"$WPA_SUPPLICANT" -s -B -P /run/wpa_supplicant.wlan0.pid \
+    -i wlan0 -D nl80211,wext -c /etc/wpa_supplicant/wpa_supplicant.conf
+sleep 5
+if ! ip -4 -o a show wlan0 | grep -q inet; then
+    # -e IF_METRIC: ifupdown passes the stanza's `metric` to dhclient this way,
+    # and dhclient-script is the only thing that puts a metric on the default
+    # route. A bare `dhclient` leaves it at 0 -- ahead of eth0's 100 -- so a
+    # rescued boot would send internet traffic over WiFi while the wire idles,
+    # inverting the preference section 1+2 of this script exists to set. The
+    # literal must track WIRELESS_METRIC above; the quoted heredoc cannot
+    # expand it, so a test asserts the two agree.
+    #
+    # -pf/-lf name the same pid and lease files ifupdown's dhcp method uses, so
+    # a later `ifdown wlan0` can still find and stop this client.
+    dhclient -e IF_METRIC=600 \
+        -pf /run/dhclient.wlan0.pid -lf /var/lib/dhcp/dhclient.wlan0.leases \
+        wlan0
+fi
+ip -4 -br a show wlan0
+EOF
+chmod 755 /usr/local/sbin/pi-deploy-wifi-rescue
+
+cat > /etc/systemd/system/pi-deploy-wifi-rescue.service <<'EOF'
+[Unit]
+Description=Start wpa_supplicant if ifupdown failed to (pi-deploy)
+# WantedBy alone, deliberately: ordering After=multi-user.target would make
+# this wait for a target whose start job can stay pending on this rig -- the
+# service address loops by design while eth0 has no carrier (pi-deploy #40).
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pi-deploy-wifi-rescue
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable pi-deploy-wifi-rescue.service 2>/dev/null || true
