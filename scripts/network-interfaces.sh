@@ -333,14 +333,43 @@ cat > /usr/local/sbin/pi-deploy-wifi-rescue <<'EOF'
 # wlan0 within the wait, otherwise start the daemon and lease. Tag:
 # pi-deploy-wifi-rescue.
 LOG="pi-deploy-wifi-rescue:"
+
+# ASSOCIATION, not process presence. The first version polled
+# `pgrep -f wpa_supplicant.*wlan0` and treated a live process as success --
+# which it is not. ifupdown's wrapper reports `daemon failed to start` when the
+# daemon does not become ready in time, and aborts ifup, but the process it
+# spawned can still be sitting there unassociated. The rescue then found that
+# process, declared the standard path healthy, and exited having done nothing;
+# measured on the rig, the box stayed off the network for the whole boot with
+# the unit reporting success.
+#
+# wpa_state=COMPLETED is the daemon's own statement that it has associated and
+# keyed, so it cannot be satisfied by a process that merely exists.
+WPA_CLI=$(command -v wpa_cli || echo /sbin/wpa_cli)
+associated() {
+    [ -x "$WPA_CLI" ] || return 1
+    "$WPA_CLI" -i wlan0 status 2>/dev/null | grep -q "^wpa_state=COMPLETED$"
+}
+
 for i in $(seq 1 24); do
-    if pgrep -f "wpa_supplicant.*wlan0" >/dev/null 2>&1; then
-        echo "$LOG standard wpa_supplicant present; nothing to do"
+    if associated; then
+        echo "$LOG wlan0 associated by the standard path; nothing to do"
         exit 0
     fi
     sleep 5
 done
-echo "$LOG no wpa_supplicant after 120s; starting one"
+echo "$LOG wlan0 not associated after 120s; taking over"
+
+# Clear whatever the failed attempt left behind. A half-started daemon holds
+# the control socket, and a second instance on it exits 255 -- verified on the
+# rig, where an already-running daemon made the wrapper's own command line fail
+# that way. Without this the takeover inherits the very state it exists to
+# replace.
+pkill -f "wpa_supplicant.*wlan0" 2>/dev/null
+sleep 2
+rm -f /run/wpa_supplicant/wlan0 /run/wpa_supplicant/p2p-dev-wlan0
+rm -f /run/wpa_supplicant.wlan0.pid
+
 ip link set wlan0 up
 # Same invocation Debian's /etc/network/if-pre-up.d/wpasupplicant uses, so the
 # rescue reproduces the intended configuration rather than a variant of it.

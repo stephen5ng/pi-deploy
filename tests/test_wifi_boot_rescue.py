@@ -31,7 +31,7 @@ RESCUE = re.search(
 
 
 class Harness:
-    def run_rescue(self, *, wpa_running, has_route=False):
+    def run_rescue(self, *, associated, has_route=False):
         self.assertIsNotNone(RESCUE, "rescue heredoc not found in network-interfaces.sh")
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -44,10 +44,15 @@ class Harness:
             path.write_text(f'#!/bin/sh\necho "{name} $@" >> {log}\n{body}\n')
             path.chmod(0o755)
 
-        if wpa_running:
-            stub("pgrep", "exit 0")
-        else:
-            stub("pgrep", "exit 1")
+        # wpa_cli reports the daemon's own view of the link. `associated`
+        # means wpa_state=COMPLETED, not merely that a process exists.
+        stub("wpa_cli", 'echo "wpa_state=%s"'
+             % ("COMPLETED" if associated else "SCANNING"))
+        # A process may exist while unassociated -- the exact state that fooled
+        # the first version -- so pgrep succeeds in both cases here.
+        stub("pgrep", "exit 0")
+        stub("pkill", "exit 0")
+        stub("rm", "exit 0")
         stub("sleep", "exit 0")  # the 120s wait becomes instant
         # `ip route show default dev wlan0` prints a line when a default route
         # exists and nothing when it does not; the rescue greps for content.
@@ -68,16 +73,34 @@ class RescueScriptTests(Harness, unittest.TestCase):
         self.assertIsNotNone(RESCUE)
 
     def test_a_normal_boot_is_a_noop(self):
-        # wpa_supplicant present: the standard path worked, this must not
-        # touch anything.
-        done, calls = self.run_rescue(wpa_running=True)
+        # Associated by the standard path: this must not touch anything.
+        done, calls = self.run_rescue(associated=True)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("nothing to do", done.stdout)
         for forbidden in ("wpa_supplicant ", "dhclient ", "ip link"):
             self.assertNotIn(forbidden, calls)
 
+    def test_an_unassociated_daemon_does_not_count_as_success(self):
+        # The bug this replaces: the first version polled for a wpa_supplicant
+        # PROCESS. ifupdown's wrapper reports "daemon failed to start" when the
+        # daemon is not ready in time and aborts ifup, but the process it
+        # spawned can still be sitting there unassociated. The rescue found it,
+        # called the boot healthy and exited -- measured on the rig, the box
+        # stayed off the network for the whole boot while the unit reported
+        # success. The stub keeps pgrep succeeding to pin exactly that.
+        done, calls = self.run_rescue(associated=False)
+        self.assertIn("taking over", done.stdout)
+        self.assertIn("wpa_supplicant", calls)
+
+    def test_the_takeover_clears_the_stale_control_socket(self):
+        # A half-started daemon holds /run/wpa_supplicant/wlan0, and a second
+        # instance on it exits 255 -- verified on the rig. Without this the
+        # takeover inherits the state it exists to replace.
+        _, calls = self.run_rescue(associated=False)
+        self.assertIn("pkill", calls)
+
     def test_a_failed_boot_starts_the_daemon_and_leases(self):
-        done, calls = self.run_rescue(wpa_running=False)
+        done, calls = self.run_rescue(associated=False)
         self.assertEqual(done.returncode, 0, done.stderr)
         # Matched per-flag, not as one literal: pinning the whole command
         # string means any added flag fails a test that has no opinion on it.
@@ -107,7 +130,7 @@ class RescueScriptTests(Harness, unittest.TestCase):
         # route. A bare `dhclient` leaves it at 0 -- ahead of eth0's 100 -- so
         # a rescued boot would route internet traffic over WiFi while the wire
         # idles, inverting what this script exists to set.
-        _, calls = self.run_rescue(wpa_running=False)
+        _, calls = self.run_rescue(associated=False)
         self.assertIn("-e IF_METRIC=", calls)
 
     def test_the_rescued_metric_matches_the_wireless_stanza(self):
@@ -132,12 +155,12 @@ class RescueScriptTests(Harness, unittest.TestCase):
         # answered while everything off-subnet failed -- `git pull` could not
         # reach github while the gateway pinged fine. An address-only guard
         # skips dhclient in exactly that state.
-        _, calls = self.run_rescue(wpa_running=False, has_route=False)
+        _, calls = self.run_rescue(associated=False, has_route=False)
         self.assertIn("dhclient", calls)
 
     def test_a_working_route_is_left_alone(self):
         # The other half: with a real lease in place, do not re-lease.
-        _, calls = self.run_rescue(wpa_running=False, has_route=True)
+        _, calls = self.run_rescue(associated=False, has_route=True)
         self.assertNotIn("dhclient", calls)
 
     def test_it_waits_before_concluding_the_standard_path_failed(self):
