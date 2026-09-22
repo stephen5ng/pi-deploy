@@ -352,7 +352,14 @@ WPA_SUPPLICANT=$(command -v wpa_supplicant || echo /usr/sbin/wpa_supplicant)
 "$WPA_SUPPLICANT" -s -B -P /run/wpa_supplicant.wlan0.pid \
     -i wlan0 -D nl80211,wext -c /etc/wpa_supplicant/wpa_supplicant.conf
 sleep 5
-if ! ip -4 -o a show wlan0 | grep -q inet; then
+# Tested on the DEFAULT ROUTE, not on the address. An address alone does not
+# mean a working lease: measured on the rig, wlan0 held 192.168.8.129 with no
+# default route at all, so DNS worked (the resolver is on-link) while
+# everything off-subnet failed -- `git pull` could not reach github while ping
+# to the gateway succeeded. An address-only guard skips dhclient in exactly
+# that state and leaves the box half-connected, which is harder to notice than
+# no connection at all.
+if ! ip -4 route show default dev wlan0 | grep -q .; then
     # -e IF_METRIC: ifupdown passes the stanza's `metric` to dhclient this way,
     # and dhclient-script is the only thing that puts a metric on the default
     # route. A bare `dhclient` leaves it at 0 -- ahead of eth0's 100 -- so a

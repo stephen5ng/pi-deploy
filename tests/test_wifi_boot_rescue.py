@@ -31,7 +31,7 @@ RESCUE = re.search(
 
 
 class Harness:
-    def run_rescue(self, *, wpa_running):
+    def run_rescue(self, *, wpa_running, has_route=False):
         self.assertIsNotNone(RESCUE, "rescue heredoc not found in network-interfaces.sh")
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -49,7 +49,10 @@ class Harness:
         else:
             stub("pgrep", "exit 1")
         stub("sleep", "exit 0")  # the 120s wait becomes instant
-        stub("ip", "exit 0")
+        # `ip route show default dev wlan0` prints a line when a default route
+        # exists and nothing when it does not; the rescue greps for content.
+        stub("ip", 'case "$*" in *"route show default"*) %s ;; esac\nexit 0'
+             % ("echo 'default via 192.168.8.1 dev wlan0'" if has_route else ":"))
         stub("wpa_supplicant", "exit 0")
         stub("dhclient", "exit 0")
         env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
@@ -122,6 +125,20 @@ class RescueScriptTests(Harness, unittest.TestCase):
         # defaults, and a later `ifdown wlan0` then cannot stop this client.
         self.assertIn("-pf /run/dhclient.wlan0.pid", RESCUE.group(1))
         self.assertIn("-lf /var/lib/dhcp/dhclient.wlan0.leases", RESCUE.group(1))
+
+    def test_a_stale_address_without_a_route_still_leases(self):
+        # An address alone is not a working lease. Measured on the rig: wlan0
+        # held 192.168.8.129 with no default route, so the on-link resolver
+        # answered while everything off-subnet failed -- `git pull` could not
+        # reach github while the gateway pinged fine. An address-only guard
+        # skips dhclient in exactly that state.
+        _, calls = self.run_rescue(wpa_running=False, has_route=False)
+        self.assertIn("dhclient", calls)
+
+    def test_a_working_route_is_left_alone(self):
+        # The other half: with a real lease in place, do not re-lease.
+        _, calls = self.run_rescue(wpa_running=False, has_route=True)
+        self.assertNotIn("dhclient", calls)
 
     def test_it_waits_before_concluding_the_standard_path_failed(self):
         # The whole point is giving the boot-time race time to win on its own.
