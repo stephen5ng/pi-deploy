@@ -386,6 +386,28 @@ Description=Start wpa_supplicant if ifupdown failed to (pi-deploy)
 # service address loops by design while eth0 has no carrier (pi-deploy #40).
 [Service]
 Type=oneshot
+# RemainAfterExit + KillMode=process, because this oneshot's whole job is to
+# leave a daemon running behind it.
+#
+# Type=oneshot defaults to KillMode=control-group: when the main process (the
+# script) exits, systemd tears down the service cgroup and kills everything
+# still in it -- including the `-B` wpa_supplicant the script just started.
+# Measured on the rig, from the unit's own journal:
+#
+#     20:47:13 wlan0: CTRL-EVENT-CONNECTED - Connection to 96:83:c4:6b:f2:91 completed
+#     20:47:15 pi-deploy-wifi-rescue[1255]: wlan0  UP  192.168.8.129/24
+#     20:47:15 wlan0: CTRL-EVENT-TERMINATING
+#     20:47:15 pi-deploy-wifi-rescue.service: Deactivated successfully.
+#
+# The rescue associated in three seconds and systemd killed it two seconds
+# later, then reported status=0/SUCCESS -- so the unit looked like it had never
+# run while the box sat offline for the whole boot.
+#
+# RemainAfterExit keeps the unit active once the script exits, so the cgroup is
+# not collected; KillMode=process bounds an eventual stop to the main process,
+# which has already exited, rather than to everything the service spawned.
+RemainAfterExit=yes
+KillMode=process
 ExecStart=/usr/local/sbin/pi-deploy-wifi-rescue
 [Install]
 WantedBy=multi-user.target
