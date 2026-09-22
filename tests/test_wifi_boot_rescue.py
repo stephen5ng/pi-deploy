@@ -151,6 +151,46 @@ class WiringTests(unittest.TestCase):
         effective = re.sub(r"(?m)^\s*#.*$", "", body)
         self.assertNotIn("After=multi-user.target", effective)
 
+    def test_a_oneshot_that_leaves_a_daemon_behind_is_not_killed_by_systemd(self):
+        """Stated as the property, not as the literal line.
+
+        Type=oneshot defaults to KillMode=control-group: when the main process
+        exits, systemd kills everything left in the service cgroup -- including
+        a daemon the script started with -B. Measured on the rig: the rescue
+        associated at 20:47:13, printed a live address at 20:47:15, and
+        CTRL-EVENT-TERMINATING landed in the same second as "Deactivated
+        successfully". The unit reported status=0/SUCCESS while the box stayed
+        offline for the entire boot.
+
+        The premise is checked rather than assumed, so if the rescue is ever
+        changed to run wpa_supplicant in the foreground this stops demanding a
+        flag that would no longer be needed.
+        """
+        unit = re.search(
+            r"cat > /etc/systemd/system/pi-deploy-wifi-rescue\.service <<'EOF'\n(.*?)^EOF$",
+            SOURCE, re.M | re.S,
+        )
+        self.assertIsNotNone(unit, "rescue unit not found in network-interfaces.sh")
+        body = re.sub(r"(?m)^\s*#.*$", "", unit.group(1))
+
+        # Comments stripped first: the rescue's own comment explains what -B
+        # does, and matching that would make the premise permanently true no
+        # matter what the code did.
+        rescue_code = re.sub(r"(?m)^\s*#.*$", "", RESCUE.group(1))
+        starts_a_daemon = "-B" in rescue_code
+        is_oneshot = re.search(r"(?m)^Type=oneshot$", body)
+        if not (starts_a_daemon and is_oneshot):
+            return  # premise gone; the flags below are no longer the point
+
+        self.assertRegex(
+            body, r"(?m)^RemainAfterExit=yes$",
+            "without this the cgroup is collected as soon as the script exits",
+        )
+        self.assertRegex(
+            body, r"(?m)^KillMode=process$",
+            "the default control-group mode kills the daemon the script started",
+        )
+
     def test_the_script_is_valid_bash(self):
         subprocess.run(
             ["bash", "-n", str(SCRIPT)], check=True, capture_output=True
