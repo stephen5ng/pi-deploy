@@ -721,15 +721,25 @@ for ((app_idx=0; app_idx<app_count; app_idx++)); do
     # --------------------------------------------------------------------------
     # Setup Python environment (only if requirements.txt exists)
     # --------------------------------------------------------------------------
+    # uv is ensured BEFORE the branch, not inside the lock branch where it used
+    # to live. Two independent things need it: the sync below when a lock
+    # exists, and apps.yaml's install_python_cmd for dependencies (rgbmatrix
+    # and platformio both spell out `uv pip install ...`) regardless of branch.
+    # With the installer inside the lock branch, an app on the requirements
+    # branch got neither -- and its dependency step then died on
+    # `uv: command not found`. Measured on the rig immediately after lexacube
+    # moved to the requirements branch: the run aborted at the rgbmatrix step
+    # with uv present at /root/.local/bin but unreachable, because only the
+    # lock branch ever exported its PATH entry.
+    if ! command -v uv &> /dev/null; then
+        echo "  uv not found, installing..."
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+    fi
+    # uv's installer puts the binary here.
+    export PATH="$HOME/.local/bin:$PATH"
+
     if [[ -f "$path/uv.lock" ]]; then
         echo "Syncing Python environment with uv..."
-        if ! command -v uv &> /dev/null; then
-            echo "  uv not found, installing..."
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-        fi
-        # uv's installer puts the binary here, and a dependency's
-        # install_python_cmd needs it later in this run too.
-        export PATH="$HOME/.local/bin:$PATH"
         # uv defaults its environment to `<project>/.venv`, but everything
         # downstream is named: apps.yaml's exec, nfc-control reusing lexacube's
         # interpreter, and the pygame.libs search below all spell out

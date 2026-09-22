@@ -26,16 +26,28 @@ class UvEnvironmentTests(unittest.TestCase):
         )
 
     def test_uv_binary_is_on_path_for_later_dependency_commands(self):
-        uv_branch = BOOTSTRAP[BOOTSTRAP.index('if [[ -f "$path/uv.lock" ]]'):]
-        uv_branch = uv_branch[: uv_branch.index("elif")]
+        # install_python_cmd runs `uv pip ...` later in the same bootstrap
+        # whichever venv branch the app takes, so the export must precede the
+        # branch -- not sit inside the lock branch, and not be reachable only
+        # when uv had to be installed. This used to pin the export inside the
+        # lock branch's text, which is how the requirements branch ended up
+        # running the dependency step with uv present on disk but not on PATH.
         export_line = 'export PATH="$HOME/.local/bin:$PATH"'
-        self.assertIn(export_line, uv_branch)
-        # The export must not be reachable only when uv had to be installed:
-        # install_python_cmd runs uv later in the same bootstrap either way.
-        install_block = uv_branch[
-            uv_branch.index("if ! command -v uv") : uv_branch.index("fi")
-        ]
-        self.assertNotIn(export_line, install_block)
+        export_at = BOOTSTRAP.index(export_line)
+        for marker, label in [
+            ('if [[ -f "$path/uv.lock" ]]', "the venv branch"),
+            ("dep_python_cmd=$(yq", "the dependency commands"),
+        ]:
+            use_at = BOOTSTRAP.index(marker)
+            self.assertLess(
+                export_at, use_at, f"PATH must include uv before {label}"
+            )
+        install_if = BOOTSTRAP.index("if ! command -v uv")
+        install_end = BOOTSTRAP.index("fi", install_if)
+        self.assertFalse(
+            install_if < export_at < install_end,
+            "the export must not be reachable only when uv had to be installed",
+        )
 
     def test_dependency_python_installs_do_not_call_bare_pip(self):
         commands = re.findall(r'install_python_cmd:\s*"([^"]+)"', APPS)
