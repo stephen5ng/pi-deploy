@@ -455,6 +455,22 @@ git_clone_or_update() {
         ssh_opts="$ssh_opts -i $GITHUB_IDENTITY_FILE -o IdentitiesOnly=yes"
     fi
 
+    # A checkout with no resolvable HEAD is what a killed `git clone` left
+    # behind before clones were staged (below): `.git` present, HEAD pointing
+    # at refs/heads/.invalid, nothing checked out. `pull` fails on it forever,
+    # so a rerun could never recover. It holds no commits, so it is removed and
+    # cloned again -- but only when `.git` is all there is. Anything else in
+    # the directory is someone's, and deleting it is not this function's call.
+    if [[ -d "$dest/.git" ]] && ! git -C "$dest" rev-parse --verify --quiet HEAD >/dev/null; then
+        if [[ -n "$(find "$dest" -mindepth 1 -maxdepth 1 ! -name .git -print -quit)" ]]; then
+            echo "ERROR: $dest is a git checkout with no commits, but holds other" >&2
+            echo "       files too; refusing to delete it. Move it aside and rerun." >&2
+            return 1
+        fi
+        echo "Removing $dest: an interrupted clone (no commits)"
+        rm -rf "$dest"
+    fi
+
     if [[ -d "$dest/.git" ]]; then
         echo "Updating $dest..."
         current_url=$(git -C "$dest" remote get-url origin 2>/dev/null || echo "")
@@ -484,6 +500,19 @@ git_clone_or_update() {
             git "${git_id[@]}" -C "$dest" pull --no-rebase
         fi
     else
+        # Clone beside the destination and move it into place only once the
+        # clone has finished, so an interrupted run leaves nothing at $dest --
+        # the next run simply clones again. Same filesystem, so the mv is a
+        # rename. A staging directory left by a killed run is discarded.
+        # `git clone` accepted an empty directory and refused a non-empty one;
+        # keep both, and check before the clone rather than after it, since
+        # mv would otherwise nest the clone inside whatever is there.
+        local staging="$dest.partial"
+        if [[ -e "$dest" ]] && ! rmdir "$dest" 2>/dev/null; then
+            echo "ERROR: $dest exists, is not empty and is not a git checkout" >&2
+            return 1
+        fi
+        rm -rf "$staging"
         echo "Cloning $repo..."
         if [[ "$use_ssh" == "true" && "$repo" == https://github.com/* ]]; then
             repo=$(convert_https_to_ssh "$repo")
@@ -492,17 +521,18 @@ git_clone_or_update() {
 
         if [[ "$repo" == *@github.com:* || "$repo" == ssh://*github.com/* ]]; then
             if [[ -n "$branch" ]]; then
-                GIT_SSH_COMMAND="ssh $ssh_opts" git clone --branch "$branch" "$repo" "$dest"
+                GIT_SSH_COMMAND="ssh $ssh_opts" git clone --branch "$branch" "$repo" "$staging"
             else
-                GIT_SSH_COMMAND="ssh $ssh_opts" git clone "$repo" "$dest"
+                GIT_SSH_COMMAND="ssh $ssh_opts" git clone "$repo" "$staging"
             fi
         else
             if [[ -n "$branch" ]]; then
-                git clone --branch "$branch" "$repo" "$dest"
+                git clone --branch "$branch" "$repo" "$staging"
             else
-                git clone "$repo" "$dest"
+                git clone "$repo" "$staging"
             fi
         fi
+        mv "$staging" "$dest"
     fi
 }
 

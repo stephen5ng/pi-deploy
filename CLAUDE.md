@@ -484,7 +484,10 @@ outright and a reflash never had it.
 ### Idempotency
 
 The bootstrap script can be run multiple times safely:
-- Git repos are updated (pull), not re-cloned
+- Git repos are updated (pull), not re-cloned. New clones are staged at
+  `<path>.partial` and renamed into place when complete, and a checkout with no
+  commits (what an interrupted clone used to leave) is removed and cloned again,
+  so a killed first boot recovers on the next run
 - Venv creation skipped if exists
 - CPU isolation config only added if not present
 - Systemd service overwritten and restarted
