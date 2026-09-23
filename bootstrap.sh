@@ -10,6 +10,16 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
     exit 1
 fi
 
+# Everything below also goes to a log on disk. /var/log is a tmpfs on DietPi
+# and the journal is volatile until reliability.sh (near the end) makes it
+# persistent, so a first boot that dies mid-run otherwise leaves nothing but a
+# DietPi log that stops mid-line. This file survives the reboot, and it is
+# what to `tail -f` over SSH while a long run is still going.
+BOOTSTRAP_LOG=${PI_DEPLOY_LOG:-/var/lib/pi-deploy/bootstrap.log}
+mkdir -p "$(dirname "$BOOTSTRAP_LOG")"
+exec > >(tee -a "$BOOTSTRAP_LOG") 2>&1
+echo "=== bootstrap $(date -Is) pi-deploy $(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown) apps: ${*:-all} ==="
+
 # Bootstrap runs as root, so --global would write /root/.gitconfig and the
 # dietpi user would still hit "dubious ownership". --system covers every user.
 if ! git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$SCRIPT_DIR"; then
@@ -19,8 +29,8 @@ fi
 # A service that cannot start is usually environmental on this rig -- a
 # carrier-less eth0 leaves lexacube-address.service unable to claim the service
 # address, and a missing USB sound card or display makes the game exit -- and
-# none of that is a reason to skip the host-level hardening 200 lines below
-# (watchdog, persistent journal, zram, link-down routing, mDNS). Under
+# none of that is a reason to skip the host-level hardening near the end
+# (watchdog, persistent journal, zram, link-down routing). Under
 # `set -euo pipefail` a bare `systemctl restart` aborted the run right there,
 # leaving the machine half-provisioned with nothing saying which half.
 #
@@ -42,6 +52,36 @@ if ! command -v yq &> /dev/null; then
     echo "Installing bootstrap prerequisites..."
     apt-get update
     apt-get install -y --no-install-recommends yq
+fi
+
+# ============================================================================
+# REACHABILITY FIRST. Everything after this can take many minutes (apt, clones,
+# builds), and the point of doing these two now is that the Pi can be found
+# and watched over SSH while that runs -- or diagnosed when it dies. Both used
+# to run at the very end, so an interrupted first boot never got either.
+# python3, which dhcp-preference.sh validates with, is here already: yq
+# depends on it.
+# ============================================================================
+
+# DHCP server preference. Writes the rule only -- it takes effect at the next
+# renewal or reboot -- but written here it lands even when the run is killed
+# later, so the next boot comes up on the rig's server.
+if [[ -f "$SCRIPT_DIR/scripts/dhcp-preference.sh" ]]; then
+    mapfile -t reject_servers < <(yq -r '.dhcp.reject_servers[]? // empty' "$CONFIG")
+    echo "Configuring DHCP server preference..."
+    bash "$SCRIPT_DIR/scripts/dhcp-preference.sh" "${reject_servers[@]}"
+else
+    echo "  Warning: scripts/dhcp-preference.sh not found, skipping"
+fi
+
+# mDNS hostname publishing, so `ssh dietpi@<hostname>.local` works whichever
+# DHCP server won -- which is what makes the Pi findable during first boot,
+# while it may still hold the house router's lease.
+if [[ -f "$SCRIPT_DIR/scripts/mdns.sh" ]]; then
+    echo "Configuring mDNS hostname publishing..."
+    bash "$SCRIPT_DIR/scripts/mdns.sh"
+else
+    echo "  Warning: scripts/mdns.sh not found, skipping"
 fi
 
 # Cube WiFi credentials can be supplied at imaging time without ever teaching
@@ -1601,28 +1641,6 @@ if [[ -f "$SCRIPT_DIR/scripts/reliability.sh" ]]; then
     bash "$SCRIPT_DIR/scripts/reliability.sh"
 else
     echo "  Warning: scripts/reliability.sh not found, skipping hardening"
-fi
-
-# DHCP server preference. Ordered with the other host-level steps and, like
-# them, ahead of the WiFi step that can drop the SSH session. Writes config
-# only -- it deliberately does not re-lease, so this run cannot pull the
-# address out from under itself.
-if [[ -f "$SCRIPT_DIR/scripts/dhcp-preference.sh" ]]; then
-    mapfile -t reject_servers < <(yq -r '.dhcp.reject_servers[]? // empty' "$CONFIG")
-    echo "Configuring DHCP server preference..."
-    bash "$SCRIPT_DIR/scripts/dhcp-preference.sh" "${reject_servers[@]}"
-else
-    echo "  Warning: scripts/dhcp-preference.sh not found, skipping"
-fi
-
-# mDNS hostname publishing. Ordered BEFORE the WiFi preference below for the
-# same reason that one is last: a re-association can drop the SSH session, and
-# a drop there must not skip this.
-if [[ -f "$SCRIPT_DIR/scripts/mdns.sh" ]]; then
-    echo "Configuring mDNS hostname publishing..."
-    bash "$SCRIPT_DIR/scripts/mdns.sh"
-else
-    echo "  Warning: scripts/mdns.sh not found, skipping"
 fi
 
 # DietPi's generator writes no `priority=` into wpa_supplicant.conf, so with two
