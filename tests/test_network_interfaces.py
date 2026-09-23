@@ -139,8 +139,8 @@ class StanzaRewriteTests(unittest.TestCase):
         self.assertIn("source interfaces.d/*", result)
 
     def test_each_interface_is_defined_exactly_once(self):
-        # ifupdown rejects a duplicate iface stanza, and the failure mode is no
-        # network at boot.
+        # ifupdown configures a duplicated interface twice; for wlan0 the second
+        # pass kills the first pass's wpa_supplicant and leaves it DOWN.
         result = self.rewrite(DIETPI_INTERFACES, self.tmp)
         for iface in ("eth0", "wlan0"):
             self.assertEqual(
@@ -186,9 +186,10 @@ class StanzaRewriteTests(unittest.TestCase):
         self.assertIn("iface usb0 inet dhcp", result)
 
     def test_no_fixture_yields_a_duplicate_definition(self):
-        """ifupdown rejects a duplicate `iface`, and the result is no
-        networking at all rather than one interface short -- so this is the
-        assertion that matters most on every shape of input.
+        """ifupdown configures a duplicated `iface` twice, and for wlan0 the
+        second pass kills the first pass's wpa_supplicant -- WiFi DOWN at
+        boot -- so this is the assertion that matters most on every shape of
+        input.
 
         It is also the regression an intermediate version of the parser
         introduced, by reading `inet`/`dhcp` in `iface wlan0 inet dhcp` as
@@ -339,3 +340,91 @@ class ScriptWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# DietPi Trixie's drop-in, verbatim from the rig. With the main file's own
+# wlan0 stanza it made ifup configure wlan0 twice.
+DIETPI_WLAN0_DROPIN = """\
+# Location: /etc/network/interfaces.d/wlan0.conf
+# Generated with: dietpi-network
+allow-hotplug wlan0
+iface wlan0 inet dhcp
+wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
+pre-up iw dev wlan0 set power_save off || true
+post-down iw dev wlan0 set power_save on || true
+"""
+
+
+class DropinRetirementTests(unittest.TestCase):
+    """The main file is rewritten, but it sources interfaces.d/*, and a drop-in
+    defining eth0 or wlan0 there is a second definition. ifup then configures
+    the interface twice; for wlan0 the second pass killed the first pass's
+    wpa_supplicant and left the rig's WiFi DOWN on every boot."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.network = Path(self._tmp.name) / "network"
+        self.dropins = self.network / "interfaces.d"
+        self.dropins.mkdir(parents=True)
+
+    def retire(self):
+        source = SCRIPT.read_text()
+        start = source.index("retire_owned_dropins() {")
+        end = source.index("\n}\n", start) + 3
+        script = "set -euo pipefail\n" + source[start:end] + (
+            f'retire_owned_dropins "{self.dropins}"\n'
+        )
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    def retired(self):
+        return sorted(p.name for p in self.network.glob("*.superseded-by-pi-deploy.*"))
+
+    def test_dietpis_wlan0_dropin_is_retired(self):
+        (self.dropins / "wlan0.conf").write_text(DIETPI_WLAN0_DROPIN)
+        done = self.retire()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(list(self.dropins.iterdir()), [])
+        [name] = self.retired()
+        self.assertTrue(name.startswith("wlan0.conf."), name)
+        self.assertEqual((self.network / name).read_text(), DIETPI_WLAN0_DROPIN)
+
+    def test_the_retired_copy_is_outside_what_the_main_file_sources(self):
+        # `source interfaces.d/*` reads a backup left in there exactly as it
+        # reads the original, which would keep the duplicate.
+        (self.dropins / "wlan0.conf").write_text(DIETPI_WLAN0_DROPIN)
+        self.retire()
+        self.assertEqual(list(self.dropins.glob("*")), [])
+
+    def test_a_dropin_for_another_interface_is_left_alone(self):
+        (self.dropins / "usb0.conf").write_text("allow-hotplug usb0\niface usb0 inet dhcp\n")
+        self.retire()
+        self.assertEqual([p.name for p in self.dropins.iterdir()], ["usb0.conf"])
+        self.assertEqual(self.retired(), [])
+
+    def test_a_mixed_dropin_is_reported_not_moved(self):
+        # Its usb0 stanza is someone's; losing it silently is worse than a
+        # duplicate that is named in the bootstrap output.
+        mixed = DIETPI_WLAN0_DROPIN + "\niface usb0 inet dhcp\n"
+        (self.dropins / "mixed.conf").write_text(mixed)
+        done = self.retire()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual((self.dropins / "mixed.conf").read_text(), mixed)
+        self.assertIn("WARNING", done.stderr)
+
+    def test_a_commented_out_stanza_is_not_a_definition(self):
+        (self.dropins / "old.conf").write_text("#iface wlan0 inet dhcp\n")
+        self.retire()
+        self.assertEqual([p.name for p in self.dropins.iterdir()], ["old.conf"])
+
+    def test_an_absent_directory_is_fine(self):
+        self.dropins.rmdir()
+        self.assertEqual(self.retire().returncode, 0)
+
+    def test_it_runs_on_every_bootstrap_not_behind_the_marker(self):
+        # dietpi-network regenerates the drop-in whenever WiFi settings change,
+        # and the marker guard skips the main-file rewrite on every rerun.
+        source = SCRIPT.read_text()
+        guard_end = source.index("\nfi\n", source.index('if grep -qF "$MARKER"'))
+        self.assertGreater(source.index('\nretire_owned_dropins "$INTERFACES_D"\n'), guard_end)

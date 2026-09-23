@@ -35,12 +35,15 @@
 #      differs. (An earlier comparison here used FEWER arguments and so proved
 #      nothing; this one is the wrapper's own command line.)
 #
-#      What makes boot different is still unknown -- most likely the brcmfmac
-#      firmware not being ready that early, but unproven, because the
-#      boot-time failure logs nothing at all. Hence a oneshot unit that waits
-#      for the standard path, starts the daemon itself if it never came up,
-#      and says so in the journal: a no-op on every normal boot, and the first
-#      durable evidence on a bad one.
+#      The brcmfmac-readiness guess this comment used to make was wrong, or at
+#      least not needed: the same `daemon failed to start` was later
+#      reproduced on a settled rig by `ifup -v wlan0` itself, and traced to
+#      wlan0 being defined twice (step 1b). The verbatim command succeeds
+#      because it is one start; ifup was running two, the second stopping the
+#      first's daemon. Step 1b removes the duplicate. The oneshot unit stays as
+#      a backstop -- it waits for the standard path, starts the daemon itself
+#      if it never came up, and says so in the journal -- because a boot that
+#      leaves the box unreachable is too expensive to rely on one fix.
 #
 # Why wired matters here: every cube message crosses the air twice
 # (cube -> AP -> Pi). Wiring the Pi removes one of the two hops for every
@@ -50,6 +53,7 @@
 set -euo pipefail
 
 INTERFACES=/etc/network/interfaces
+INTERFACES_D=${PI_DEPLOY_INTERFACES_D:-/etc/network/interfaces.d}
 MARKER="# Managed by pi-deploy: wired preferred, WiFi fallback."
 WIRED_METRIC=100
 WIRELESS_METRIC=600
@@ -59,9 +63,9 @@ echo "=== Network interfaces: wired preferred, WiFi fallback ==="
 # ---------------------------------------------------------------------------
 # 1 + 2. The ifupdown stanzas.
 #
-# Rewritten in place rather than dropped into interfaces.d: the stanzas below
-# already exist in the main file, and ifupdown rejects a duplicate `iface`
-# definition, so a drop-in would break networking rather than override it.
+# Rewritten in place rather than dropped into interfaces.d: the stanzas may
+# already exist in the main file, and a second definition of one interface is
+# not an override -- see retire_owned_dropins below for what it does instead.
 # ---------------------------------------------------------------------------
 if grep -qF "$MARKER" "$INTERFACES"; then
     echo "  [1/4] stanzas already managed"
@@ -113,8 +117,9 @@ def stanza_fields(line):
 # The two keyword shapes must not be conflated. `iface <name> <family>
 # <method>` names exactly one interface; `auto`/`allow-hotplug` take a list.
 # Reading `inet`/`dhcp` as interface names leaves the `iface` stanza in place
-# while removing its `allow-hotplug`, and a duplicate `iface` is rejected by
-# ifupdown outright -- no networking at all, rather than one interface short.
+# while removing its `allow-hotplug`, and a duplicate `iface` is not an
+# error to ifupdown: it configures the interface twice, and for wlan0 the
+# second pass kills the first pass's wpa_supplicant (see step 1b).
 kept = []
 dropping = False
 for line in open(path).read().splitlines():
@@ -175,6 +180,54 @@ iface wlan0 inet dhcp
 open(path, "w").write(text)
 PY
 fi
+
+# ---------------------------------------------------------------------------
+# 1b. One definition per interface: retire drop-ins that define ours.
+#
+# The rewrite above owns the main file only, but the main file sources
+# interfaces.d/*, and DietPi Trixie puts wlan0 there (interfaces.d/wlan0.conf,
+# written by dietpi-network). With both present ifupdown does not reject the
+# duplicate -- `ifquery wlan0` merges them and exits 0 -- it configures wlan0
+# TWICE. Measured with `ifup -v wlan0` on the rig: the first pass starts
+# wpa_supplicant and takes a lease, then the second pass stops that daemon via
+# the shared pidfile, fails to start its own ("daemon failed to start"), and
+# ifup reports failure with wlan0 DOWN. That is the WiFi-dies-at-boot defect
+# the rescue unit in step 4 was built around.
+#
+# Run on every bootstrap, not behind the marker: dietpi-network regenerates
+# the drop-in whenever the WiFi settings change. A retired file is moved to
+# /etc/network, never left in interfaces.d, where `source interfaces.d/*`
+# would read a backup exactly as it reads the original. A drop-in that also
+# defines some other interface is left in place and reported: its other
+# stanza is someone's, and a loud duplicate beats a silently lost interface.
+# ---------------------------------------------------------------------------
+retire_owned_dropins() {
+    local dir=$1 dropin names name owned other retired
+    [[ -d "$dir" ]] || return 0
+    for dropin in "$dir"/*; do
+        [[ -f "$dropin" ]] || continue
+        names=$(awk '$1 == "iface" { print $2 }' "$dropin")
+        owned=false
+        other=false
+        for name in $names; do
+            case "$name" in
+                eth0|wlan0) owned=true ;;
+                *) other=true ;;
+            esac
+        done
+        [[ "$owned" == true ]] || continue
+        if [[ "$other" == true ]]; then
+            echo "  WARNING: $dropin defines eth0/wlan0 alongside other interfaces;" >&2
+            echo "           left in place, so those are defined twice. Remove the" >&2
+            echo "           eth0/wlan0 stanzas from it by hand." >&2
+            continue
+        fi
+        retired="$(dirname "$dir")/$(basename "$dropin").superseded-by-pi-deploy.$(date +%Y%m%d-%H%M%S)"
+        mv "$dropin" "$retired"
+        echo "  [1b/4] retired duplicate definition $dropin -> $retired"
+    done
+}
+retire_owned_dropins "$INTERFACES_D"
 
 # ---------------------------------------------------------------------------
 # 2b. The subnet-route half, which dhclient cannot do.

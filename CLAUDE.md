@@ -428,9 +428,17 @@ as an automatic fallback. Three parts, all idempotent:
   `wlan0` would answer for a service address living on `eth0`.
 
 The stanzas are rewritten in the main `interfaces` file rather than dropped into
-`interfaces.d/`: the stanzas already exist there and ifupdown rejects a
-duplicate `iface`, so a drop-in would break networking rather than override it.
-The original is backed up to `interfaces.before-pi-deploy.<timestamp>`.
+`interfaces.d/`. A second definition of an interface is not an override:
+ifupdown accepts it (`ifquery` merges the two) and then configures the
+interface **twice**. For wlan0 the second pass stops the first pass's
+wpa_supplicant through the shared pidfile and fails to start its own, leaving
+wlan0 DOWN -- measured with `ifup -v wlan0`, and the cause of WiFi dying at
+boot. DietPi Trixie keeps wlan0 in `interfaces.d/wlan0.conf`, so the script
+also retires any drop-in defining eth0 or wlan0 to
+`/etc/network/<name>.superseded-by-pi-deploy.<timestamp>` (never inside
+`interfaces.d`, which `source interfaces.d/*` would still read), on every run
+because `dietpi-network` regenerates it. The original main file is backed up to
+`interfaces.before-pi-deploy.<timestamp>`.
 
 This pairs with `ignore_routes_with_linkdown` from `reliability.sh` — metrics
 decide preference, that sysctl is what makes the switch happen when a cable
