@@ -12,6 +12,7 @@ CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/Library/Caches}"
 CACHE_DIRECTORY="$CACHE_ROOT/lexacube"
 WRITER="imager"
 DRY_RUN=false
+ALLOW_STALE=false
 
 usage() {
     cat <<EOF
@@ -28,6 +29,7 @@ Options:
   --cache-directory DIR Download cache
   --writer NAME         Image writer: imager (default) or dd
   --dry-run             Validate and render, but do not download or erase
+  --allow-stale         Prepare even if this checkout is behind origin/main
   --help
 EOF
 }
@@ -68,6 +70,10 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --allow-stale)
+            ALLOW_STALE=true
+            shift
+            ;;
         --help|-h)
             usage
             exit 0
@@ -98,6 +104,32 @@ done
 if [[ "$WRITER" == "dd" ]]; then
     command -v xz &> /dev/null || fail "--writer dd requires the 'xz' command"
     command -v dd &> /dev/null || fail "--writer dd requires the 'dd' command"
+fi
+
+# The card is built from THIS checkout's scripts -- the first-boot loader, the
+# renderer, which secrets get staged -- not from GitHub. A card prepared from a
+# checkout that had fallen behind main silently shipped an older recipe: it
+# predated deploy-key staging, so the private cubes clone had no credential
+# and first boot never finished. Being ahead of main is fine (that is how a
+# branch gets tested); being behind it is the defect.
+checkout_is_current() {
+    local repo=$1 behind branch
+    if ! git -C "$repo" fetch --quiet origin main 2>/dev/null; then
+        echo "Warning: could not fetch origin/main; cannot tell whether this" >&2
+        echo "         checkout is current." >&2
+        return 0
+    fi
+    behind=$(git -C "$repo" rev-list --count HEAD..origin/main)
+    (( behind == 0 )) && return 0
+    branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD)
+    echo "Error: this checkout ($branch) is $behind commit(s) behind origin/main." >&2
+    echo "       The card is built from this checkout's scripts, not GitHub's." >&2
+    echo "       Update it, or prepare from a worktree of origin/main, or pass" >&2
+    echo "       --allow-stale to prepare from it anyway." >&2
+    return 1
+}
+if [[ "$ALLOW_STALE" != true ]]; then
+    checkout_is_current "$REPOSITORY_DIR" || exit 1
 fi
 
 case "$CONFIG" in

@@ -53,6 +53,10 @@ and first-boot-file staging:
 ./scripts/prepare_dietpi_sd.sh --device /dev/diskN --writer dd
 ```
 
+The card is built from the checkout the script runs in, not from GitHub, so
+the script refuses to run when that checkout is behind `origin/main` (pass
+`--allow-stale` to override). A branch ahead of main is fine.
+
 The script accepts only a whole external/removable macOS disk, refuses
 `/dev/disk0` and internal disks, verifies DietPi's published SHA-256 checksum,
 and requires the exact confirmation `ERASE /dev/diskN`. It uses Raspberry Pi

@@ -20,6 +20,14 @@ mkdir -p "$(dirname "$BOOTSTRAP_LOG")"
 exec > >(tee -a "$BOOTSTRAP_LOG") 2>&1
 echo "=== bootstrap $(date -Is) pi-deploy $(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown) apps: ${*:-all} ==="
 
+# A private repository with no credential must fail, not ask. DietPi's first
+# boot runs this with tty1 attached, so git's HTTPS username prompt went to a
+# console nobody was watching: the cubes clone sat at `Username for
+# 'https://github.com':` for as long as the Pi stayed powered, and the log
+# just stopped mid-line. With prompts off it fails at once with
+# `could not read Username ... terminal prompts disabled`.
+export GIT_TERMINAL_PROMPT=0
+
 # Bootstrap runs as root, so --global would write /root/.gitconfig and the
 # dietpi user would still hit "dubious ownership". --system covers every user.
 if ! git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$SCRIPT_DIR"; then
@@ -450,7 +458,10 @@ git_clone_or_update() {
         use_ssh=true
     fi
 
-    local ssh_opts="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS"
+    # BatchMode, as in the probe above: an encrypted key would otherwise ask
+    # for a passphrase on first boot's tty1 -- the same silent hang as the
+    # HTTPS username prompt GIT_TERMINAL_PROMPT=0 prevents.
+    local ssh_opts="-o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS"
     if [[ -n "$GITHUB_IDENTITY_FILE" ]]; then
         ssh_opts="$ssh_opts -i $GITHUB_IDENTITY_FILE -o IdentitiesOnly=yes"
     fi
