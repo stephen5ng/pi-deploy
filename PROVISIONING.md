@@ -75,6 +75,25 @@ loader clones this repository to `/opt/pi-deploy` and runs:
 ./bootstrap.sh lexacube
 ```
 
+Bootstrap makes the Pi reachable before its long part (apt, clones, builds). A
+few minutes after power-on it publishes `lexacube.local`, which resolves
+whichever router gave it its address -- on first boot that is often the house
+router, not the rig's, so look for the name rather than in a router's client
+list. Watch the run from there:
+
+```sh
+ssh dietpi@lexacube.local sudo tail -f /var/lib/pi-deploy/bootstrap.log
+```
+
+The log is on disk, not in the RAM-backed `/var/log`, so it also survives a
+reboot and shows how far an interrupted run got.
+A reflashed Pi presents a new SSH host key under the same name, so expect
+`ssh` to refuse `lexacube.local` until the old entry is removed with
+`ssh-keygen -R lexacube.local`. If another Pi named `lexacube` is also
+powered on (the old one kept for a replacement, say), whichever claimed the
+name first keeps `lexacube.local` and avahi renames the other
+`lexacube-2.local`, so check which box answered.
+
 If setup is interrupted, connect over SSH and rerun:
 
 ```sh
