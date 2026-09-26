@@ -7,8 +7,8 @@
 #
 #   1. Hardware watchdog   — auto-reboot a truly hung Pi in 15s (no more
 #                            running to the machine to pull power).
-#   2. Persistent journald — keep logs across reboots/crashes, surgically,
-#                            without giving up DietPi's RAMlog.
+#   2. Persistent journald — keep logs across reboots/crashes; DietPi's
+#                            RAMlog is uninstalled because it clears them.
 #   3. zram swap           — compressed-RAM safety valve so a RAM spike
 #                            overflows instead of hanging the box.
 #   4. Health logger       — poll firmware throttle/undervoltage into the
@@ -40,10 +40,10 @@ EOF
 systemctl daemon-reexec
 
 # ---------------------------------------------------------------------------
-# 2. Persistent journald. /var/log is a DietPi RAMlog tmpfs, so journald is
-#    volatile and a reboot erases the logs that would explain a hang. Bind
-#    /var/log/journal to an SSD-backed dir so the journal (only) persists,
-#    leaving RAMlog to handle the rest of /var/log. The x-systemd.before
+# 2. Persistent journald. DietPi ships /var/log as a RAMlog tmpfs, so journald
+#    is volatile and a reboot erases the logs that would explain a hang. Bind
+#    /var/log/journal to an SSD-backed dir so the journal persists, and
+#    uninstall RAMlog, whose hourly clear empties it anyway. The x-systemd.before
 #    ordering guarantees the bind is mounted before DietPi's ramlog service
 #    touches /var/log; nofail keeps boot alive if the SSD is ever absent.
 # ---------------------------------------------------------------------------
@@ -74,6 +74,26 @@ if ! findmnt -M /var/log/journal >/dev/null 2>&1; then
 fi
 systemctl restart systemd-journald
 journalctl --flush || true
+
+# The bind alone kept at most an hour. RAMlog's hourly cron runs
+# `dietpi-logclear 1`, which truncates every file `find /var/log -type f`
+# reaches -- and find descends into the bind mount, so each :17 emptied the
+# journal, archives included. A full event day was lost that way. RAMlog goes:
+# /var/log moves to disk, and nothing clears it.
+#
+# `dietpi-software uninstall 103` only schedules the tmpfs removal for the next
+# boot (its disable.sh is what rewrites INDEX_LOGGING), so the index is also
+# set here: the cron reads it every hour and stops clearing from this run on.
+if [ -f /boot/dietpi/.installed ]; then
+    sed -i 's/^INDEX_LOGGING=-[12]$/INDEX_LOGGING=0/' /boot/dietpi/.installed
+    if grep -q '^aSOFTWARE_INSTALL_STATE\[103\]=2' /boot/dietpi/.installed; then
+        if G_INTERACTIVE=0 /boot/dietpi/dietpi-software uninstall 103; then
+            echo "  DietPi-RAMlog uninstalled; /var/log leaves tmpfs on next boot"
+        else
+            echo "  WARNING: DietPi-RAMlog uninstall failed; hourly clear is off, tmpfs remains"
+        fi
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # 3. zram swap. No swap + cgroup_disable=memory means a RAM spike hangs the

@@ -569,8 +569,15 @@ power-cycle. Four independent measures:
    journal is volatile and a reboot erases the logs that would explain a hang.
    A `nofail` bind mount ties `/var/log/journal` to SSD-backed
    `/var/lib/journal-persist` (with `x-systemd.before=dietpi-ramlog.service`
-   ordering), and a `journald.conf.d` drop-in sets `Storage=persistent`. RAMlog
-   still handles the rest of `/var/log`.
+   ordering), and a `journald.conf.d` drop-in sets `Storage=persistent`.
+   **RAMlog is then uninstalled** (`dietpi-software uninstall 103`, and
+   `AUTO_SETUP_LOGGING_INDEX=0` in the template for fresh flashes). Its hourly
+   cron runs `dietpi-logclear 1`, which truncates every file under `/var/log`
+   — descending into the bind mount — so with RAMlog present the "persistent"
+   journal held at most the hour since the last `:17`, and a whole event day
+   was lost. The uninstall moves `/var/log` to disk at the next boot; the
+   script also sets `INDEX_LOGGING=0` in `/boot/dietpi/.installed` so the
+   clear stops immediately rather than after that reboot.
 3. **zram swap** — no swap + `cgroup_disable=memory` means a RAM spike hangs the
    whole box. `dietpi-set_swapfile 1 zram` adds ~50%-of-RAM compressed swap
    (zero SSD wear). Fresh flashes get this from `dietpi.template.txt`

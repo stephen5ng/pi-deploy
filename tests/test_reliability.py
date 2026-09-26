@@ -12,8 +12,11 @@ These tests read it instead, and guard the two decisions that are easy to
     it with its /dev/null symlink ("File ... already exists").
 """
 
+import os
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -122,6 +125,78 @@ class UnitOrderingTests(unittest.TestCase):
         body = self.units.get("pi-health-watch.service")
         self.assertIsNotNone(body, "pi-health-watch.service is no longer written")
         self.assertRegex(body, r"(?m)^WantedBy=multi-user\.target$")
+
+
+class RamlogIsRemovedTests(unittest.TestCase):
+    """RAMlog's hourly `dietpi-logclear 1` truncates every file under /var/log,
+    including the bind-mounted journal, so the persistent journal held at most
+    an hour. A whole event day of logs was lost to it.
+
+    The step is run here against a fake /boot/dietpi with a stub
+    dietpi-software, so what is checked is what the shell actually does.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        source = RELIABILITY.read_text(encoding="utf-8")
+        match = re.search(
+            r"^if \[ -f /boot/dietpi/\.installed \]; then\n.*?^fi$",
+            source,
+            re.M | re.S,
+        )
+        assert match, "the RAMlog step is no longer a top-level if-block"
+        cls.step = match.group(0)
+
+    def run_step(self, installed):
+        with tempfile.TemporaryDirectory() as tmp:
+            dietpi = Path(tmp) / "dietpi"
+            dietpi.mkdir()
+            (dietpi / ".installed").write_text(installed, encoding="utf-8")
+            calls = Path(tmp) / "calls"
+            stub = dietpi / "dietpi-software"
+            stub.write_text(f'#!/bin/sh\necho "$@" >> {calls}\n', encoding="utf-8")
+            stub.chmod(0o755)
+            env = dict(os.environ)
+            if sys.platform == "darwin":
+                # The script is GNU sed (the Pi); BSD sed's -i takes a suffix.
+                shim = Path(tmp) / "bin"
+                shim.mkdir()
+                (shim / "sed").write_text(
+                    '#!/bin/sh\n[ "$1" = -i ] && { shift; exec /usr/bin/sed -i "" "$@"; }\n'
+                    'exec /usr/bin/sed "$@"\n',
+                    encoding="utf-8",
+                )
+                (shim / "sed").chmod(0o755)
+                env["PATH"] = f"{shim}:{env['PATH']}"
+            script = "set -euo pipefail\n" + self.step.replace(
+                "/boot/dietpi/", f"{dietpi}/"
+            )
+            subprocess.run(
+                ["bash", "-c", script], check=True, capture_output=True, env=env
+            )
+            return (
+                (dietpi / ".installed").read_text(encoding="utf-8"),
+                calls.read_text(encoding="utf-8") if calls.exists() else "",
+            )
+
+    def test_an_installed_ramlog_is_uninstalled_and_the_clear_stops(self):
+        installed, calls = self.run_step(
+            "aSOFTWARE_INSTALL_STATE[103]=2\nINDEX_LOGGING=-1\n"
+        )
+        self.assertEqual(calls, "uninstall 103\n")
+        self.assertIn("INDEX_LOGGING=0\n", installed)
+        self.assertNotIn("INDEX_LOGGING=-1", installed)
+
+    def test_a_rerun_after_the_uninstall_does_nothing(self):
+        installed, calls = self.run_step(
+            "aSOFTWARE_INSTALL_STATE[103]=0\nINDEX_LOGGING=0\n"
+        )
+        self.assertEqual(calls, "")
+        self.assertIn("INDEX_LOGGING=0\n", installed)
+
+    def test_fresh_flashes_never_install_ramlog(self):
+        template = (REPOSITORY / "dietpi.template.txt").read_text(encoding="utf-8")
+        self.assertRegex(template, r"(?m)^AUTO_SETUP_LOGGING_INDEX=0$")
 
 
 if __name__ == "__main__":
