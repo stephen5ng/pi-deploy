@@ -56,6 +56,20 @@ class KnockstripDeploymentTests(unittest.TestCase):
         self.assertRegex(self.app, r"(?m)^\s*- path: config\.local\.yaml$")
         self.assertIn('rig_files paths must be relative without', BOOTSTRAP)
 
+    def test_analytics_upload_units_are_declared_and_only_the_timer_enabled(self):
+        # The game only writes queue files; without the uploader the Pi plays
+        # fine and nothing ever reaches PostHog. The oneshot service has no
+        # [Install], so the timer is what gets enabled -- same as lexacube's.
+        self.assertRegex(
+            self.app,
+            r"(?m)^\s*- source: ops/knockstrip-analytics-upload\.timer\n\s*enable: true$",
+        )
+        service = re.search(
+            r"(?m)^\s*- source: ops/knockstrip-analytics-upload\.service\n(.*)$", self.app
+        )
+        self.assertIsNotNone(service, "the upload service must be installed")
+        self.assertNotIn("enable:", service.group(1))
+
     def test_first_boot_does_not_limit_the_selection_to_lexacube(self):
         # App selection is intentionally additive for maintenance runs, but
         # the SSD's first boot must provision every configured application.
