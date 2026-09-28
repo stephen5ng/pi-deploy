@@ -179,6 +179,16 @@ apps:
     unit_source: ops/knockstrip.service
     extra_units:
       - ops/knockstrip-preflight.service
+      # The game only writes analytics to numbered files in
+      # /var/lib/knockstrip/analytics; this sends them to PostHog (knockstrip
+      # PR #264: sending from inside the game stalled the audio whenever the
+      # venue was offline). Same shape as lexacube's: the service is a
+      # Type=oneshot with no [Install], installed but NOT enabled; enabling the
+      # timer is what schedules it. Without these the Pi plays normally and
+      # its queue grows forever -- no error, no data.
+      - source: ops/knockstrip-analytics-upload.service
+      - source: ops/knockstrip-analytics-upload.timer
+        enable: true
     # Gitignored in the knockstrip repo because there is no shared "correct"
     # value -- which also means a reflash loses them and the game will not run.
     # These are this rig's recorded values, not invented defaults: update them
