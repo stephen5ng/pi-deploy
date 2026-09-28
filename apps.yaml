@@ -207,5 +207,12 @@ apps:
           hardware:
             num_stations: 10
             total_leds: 300            # per-station zone = total_leds/num_stations - station_gap_leds = 30
+
+          # Noisy venue (a fair, a bar): uncomment to play the compressed .loud mix of songs
+          # that have one (CanCan.loud.mp3), so quiet passages survive the crowd. Restart
+          # the game after changing it. Needs knockstrip with audio.variant (PR #266):
+          # on older code this key stops the game from starting.
+          # audio:
+          #   variant: loud
     apt_packages:
       - libportaudio2
