@@ -99,7 +99,7 @@ def validate(values: dict[str, str]) -> None:
 
 
 def render_dietpi(
-    template: str, values: dict[str, str], public_key: str | None
+    template: str, values: dict[str, str], public_keys: list[str]
 ) -> str:
     settings = {
         "AUTO_SETUP_GLOBAL_PASSWORD": required(values, "DIETPI_PASSWORD"),
@@ -116,13 +116,19 @@ def render_dietpi(
     }
     if values.get("DIETPI_TIMEZONE"):
         settings["AUTO_SETUP_TIMEZONE"] = values["DIETPI_TIMEZONE"]
-    if public_key:
-        settings["AUTO_SETUP_SSH_PUBKEY"] = public_key
+    if public_keys:
         settings["SOFTWARE_DISABLE_SSH_PASSWORD_LOGINS"] = "1"
 
     rendered = template
     for name, value in settings.items():
         rendered = replace_setting(rendered, name, value)
+    if public_keys:
+        # DietPi reads the setting once per key, so each key is its own line.
+        rendered = replace_setting(
+            rendered,
+            "AUTO_SETUP_SSH_PUBKEY",
+            "\nAUTO_SETUP_SSH_PUBKEY=".join(public_keys),
+        )
     return rendered
 
 
@@ -153,15 +159,24 @@ def render_cube_firmware_secrets(values: dict[str, str]) -> str:
     return f'''// Generated from provisioning.env by pi-deploy.\n#pragma once\n\n#define SSID_NAME "{ssid}"\n#define WIFI_PASSWORD "{password}"\n#define SSID_NAME_PORTABLE "{ssid}"\n#define WIFI_PASSWORD_PORTABLE "{password}"\n'''
 
 
-def read_public_key(values: dict[str, str]) -> str | None:
+def read_public_keys(values: dict[str, str]) -> list[str]:
+    """Every key in SSH_PUBLIC_KEY_FILE, which reads like authorized_keys:
+    one key per line, blank lines and # comments ignored."""
     raw_path = values.get("SSH_PUBLIC_KEY_FILE", "")
     if not raw_path:
-        return None
+        return []
     path = Path(raw_path).expanduser()
-    key = path.read_text(encoding="utf-8").strip()
-    if "\n" in key or not key.startswith(("ssh-ed25519 ", "ssh-rsa ", "ecdsa-")):
-        raise ValueError(f"{path} does not contain one supported SSH public key")
-    return key
+    keys = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not keys:
+        raise ValueError(f"{path} contains no SSH public key")
+    for key in keys:
+        if not key.startswith(("ssh-ed25519 ", "ssh-rsa ", "ecdsa-")):
+            raise ValueError(f"{path} has a line that is not a supported SSH public key")
+    return keys
 
 
 def secrets_directory(values: dict[str, str]) -> Path:
@@ -278,13 +293,13 @@ def render_files(
         raise ValueError(f"{env_path} must not be readable by group or other users")
     values = parse_env(env_path)
     validate(values)
-    public_key = read_public_key(values)
+    public_keys = read_public_keys(values)
 
     output_directory.mkdir(parents=True, exist_ok=True)
     os.chmod(output_directory, 0o700)
     outputs = {
         output_directory / "dietpi.txt": render_dietpi(
-            dietpi_template.read_text(encoding="utf-8"), values, public_key
+            dietpi_template.read_text(encoding="utf-8"), values, public_keys
         ),
         output_directory / "dietpi-wifi.txt": render_wifi(
             wifi_template.read_text(encoding="utf-8"), values
