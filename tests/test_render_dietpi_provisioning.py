@@ -92,6 +92,54 @@ class RenderDietPiProvisioningTests(unittest.TestCase):
                 stat.S_IMODE((output / "dietpi-wifi.txt").stat().st_mode), 0o600
             )
 
+    def test_renders_one_pubkey_line_per_key_in_the_key_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = root / "provisioning.env"
+            public_keys = root / "authorized_keys"
+            output = root / "rendered"
+            env.write_text(
+                "WIFI_SSID='LEXA CUBE'\n"
+                "WIFI_PASSWORD='game-night'\n"
+                "WIFI_COUNTRY='US'\n"
+                "CUBE_WIFI_SSID='LEXA CUBE 2G'\n"
+                "CUBE_WIFI_PASSWORD='second-game-night'\n"
+                "DIETPI_PASSWORD='temporary-password'\n"
+                f"SSH_PUBLIC_KEY_FILE='{public_keys}'\n",
+                encoding="utf-8",
+            )
+            env.chmod(0o600)
+            (root / "dietpi.template.txt").write_text(DIETPI_TEMPLATE, encoding="utf-8")
+            (root / "dietpi-wifi.template.txt").write_text(WIFI_TEMPLATE, encoding="utf-8")
+            public_keys.write_text(
+                "# this Mac\n"
+                "ssh-rsa AAAAB3NzaC1yc2ETest mac\n"
+                "\n"
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest termius\n",
+                encoding="utf-8",
+            )
+
+            provisioning.render_files(
+                env,
+                root / "dietpi.template.txt",
+                root / "dietpi-wifi.template.txt",
+                output,
+            )
+
+            dietpi = (output / "dietpi.txt").read_text(encoding="utf-8")
+            pubkey_lines = [
+                line for line in dietpi.splitlines()
+                if line.startswith("AUTO_SETUP_SSH_PUBKEY=")
+            ]
+            self.assertEqual(
+                pubkey_lines,
+                [
+                    "AUTO_SETUP_SSH_PUBKEY=ssh-rsa AAAAB3NzaC1yc2ETest mac",
+                    "AUTO_SETUP_SSH_PUBKEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest termius",
+                ],
+            )
+            self.assertIn("SOFTWARE_DISABLE_SSH_PASSWORD_LOGINS=1", dietpi)
+
     def test_rejects_unedited_example_placeholders(self):
         values = {
             "WIFI_SSID": "LEXACUBE",
