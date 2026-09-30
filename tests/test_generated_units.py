@@ -153,6 +153,13 @@ class GeneratedUnitTests(unittest.TestCase):
         self.assertIn("RestartSec=5", service)
 
 
+class LexacubeConfigurationTests(unittest.TestCase):
+    def test_lexacube_runs_python_unbuffered(self):
+        # Block-buffered stdout reaches the journal in 8 KB bursts, every line
+        # stamped with the flush time rather than when it happened.
+        self.assertRegex(app_block("lexacube"), r"(?m)^\s+- PYTHONUNBUFFERED=1$")
+
+
 class NfcControlConfigurationTests(unittest.TestCase):
     """nfc-control exits immediately when the broker is unreachable, so its
     unit is what decides between 'stops and says so' and 'restarts forever'."""

@@ -77,6 +77,9 @@ apps:
       failover: false
     environment:
       - LED_DISPLAY_TYPE=mini
+      # print() to a pipe is block-buffered: without this the journal gets
+      # the game's output in 8 KB bursts, every line stamped with the flush.
+      - PYTHONUNBUFFERED=1
       - LEXACUBE_ADMIN_HOST=0.0.0.0
       - LEXACUBE_ADMIN_PORT=8080
       # Analytics are opt-in by the presence of this variable, so that a
