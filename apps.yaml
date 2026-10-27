@@ -85,6 +85,12 @@ apps:
       # deployment. Must match the outbox in
       # deploy/lexacube-analytics-upload.service, which is what drains it.
       - LEXACUBE_ANALYTICS_DIR=/var/lib/lexacube/analytics
+      # The high-score board origin (the game appends /api/leaderboard).
+      # Setting it is what turns the cabinet's board display on: without it
+      # the game installs the null client, which draws nothing and prompts
+      # for nothing. Phase A of docs/pi-high-scores-design.md; the prompt
+      # itself stays gated until the cube entry loop lands.
+      - LEXACUBE_HIGHSCORES_URL=https://lexacube.vercel.app
     extra_units:
       # The admin page runs as its own service so it survives the game
       # restarts it triggers (updates, panel tests). The cubes repo owns the
